@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finsight-ai"
+version = "0.1.0"
+description = "Agentic financial risk intelligence over public SEC filings."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Gowtham Kondabolu" }]
+dependencies = [
+  "fastapi>=0.141,<1.0",
+  "httpx>=0.28,<1.0",
+  "pydantic>=2.13,<3.0",
+  "pydantic-settings>=2.14,<3.0",
+  "structlog>=25.4,<26.0",
+  "tenacity>=9.1,<10.0",
+  "uvicorn[standard]>=0.35,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.17,<2.0",
+  "httpx2>=2.10,<3.0",
+  "pip-audit>=2.9,<3.0",
+  "pytest>=9.1,<10.0",
+  "pytest-asyncio>=1.1,<2.0",
+  "pytest-cov>=7.1,<8.0",
+  "ruff>=0.12,<1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = [
+  "-q",
+  "--strict-config",
+  "--strict-markers",
+  "--cov=finsight",
+  "--cov-report=term-missing",
+]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["finsight"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+packages = ["finsight"]
+mypy_path = ["src"]
