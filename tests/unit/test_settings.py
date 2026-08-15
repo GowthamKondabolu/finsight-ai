@@ -68,3 +68,53 @@ def test_settings_reject_local_password_outside_local_environment(
         match="cannot use the local database password",
     ):
         Settings(environment=environment)
+
+
+def test_sec_client_settings_use_policy_safe_defaults() -> None:
+    """SEC access defaults should remain within the published rate limit."""
+
+    settings = Settings()
+
+    assert settings.sec_request_timeout_seconds == 30.0
+    assert settings.sec_requests_per_second == 5.0
+    assert settings.sec_retry_attempts == 4
+
+
+def test_sec_client_settings_read_prefixed_environment_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC client controls should support deployment-specific overrides."""
+
+    monkeypatch.setenv("FINSIGHT_SEC_REQUEST_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("FINSIGHT_SEC_REQUESTS_PER_SECOND", "8")
+    monkeypatch.setenv("FINSIGHT_SEC_RETRY_ATTEMPTS", "6")
+
+    settings = Settings()
+
+    assert settings.sec_request_timeout_seconds == 45.0
+    assert settings.sec_requests_per_second == 8.0
+    assert settings.sec_retry_attempts == 6
+
+
+@pytest.mark.parametrize(
+    ("environment_variable", "value"),
+    [
+        ("FINSIGHT_SEC_REQUEST_TIMEOUT_SECONDS", "0"),
+        ("FINSIGHT_SEC_REQUEST_TIMEOUT_SECONDS", "121"),
+        ("FINSIGHT_SEC_REQUESTS_PER_SECOND", "0"),
+        ("FINSIGHT_SEC_REQUESTS_PER_SECOND", "10.1"),
+        ("FINSIGHT_SEC_RETRY_ATTEMPTS", "0"),
+        ("FINSIGHT_SEC_RETRY_ATTEMPTS", "11"),
+    ],
+)
+def test_sec_client_settings_reject_values_outside_policy_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_variable: str,
+    value: str,
+) -> None:
+    """Unsafe or nonsensical SEC client controls should fail validation."""
+
+    monkeypatch.setenv(environment_variable, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
