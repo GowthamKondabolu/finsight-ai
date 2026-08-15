@@ -1,5 +1,7 @@
 """Tests for the policy-compliant SEC EDGAR HTTP client."""
 
+import hashlib
+from datetime import date
 from typing import Any
 
 import httpx
@@ -12,6 +14,7 @@ from finsight.ingestion.sec_client import (
     SecEdgarError,
     SecEdgarPayloadError,
 )
+from finsight.ingestion.sec_schemas import SecFilingMetadata
 
 
 def sec_settings(
@@ -402,3 +405,107 @@ async def test_client_defensively_rejects_an_empty_retry_loop() -> None:
 
         with pytest.raises(SecEdgarError, match="retry loop ended unexpectedly"):
             await client._request_json(f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json")
+
+
+def sample_filing(
+    *,
+    accession_number: str = "0000320193-24-000123",
+    primary_document: str = "aapl-20240629.htm",
+) -> SecFilingMetadata:
+    """Return filing metadata suitable for document-download tests."""
+
+    return SecFilingMetadata(
+        accession_number=accession_number,
+        filing_date=date(2024, 8, 2),
+        report_date=date(2024, 6, 29),
+        form_type="10-Q",
+        primary_document=primary_document,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_filing_document_returns_content_hash_and_provenance() -> None:
+    """Downloaded filing content should retain its source URL and SHA-256."""
+
+    content = b"<html><body>Apple quarterly filing</body></html>"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = SecEdgarClient(sec_settings(), http_client=http_client)
+        document = await client.fetch_filing_document(
+            "320193",
+            sample_filing(),
+        )
+
+    expected_url = (
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240629.htm"
+    )
+    assert len(requests) == 1
+    assert str(requests[0].url) == expected_url
+    assert document.source_url == expected_url
+    assert document.content == content
+    assert document.content_hash == hashlib.sha256(content).hexdigest()
+    assert document.content_type == "text/html; charset=utf-8"
+
+
+@pytest.mark.asyncio
+async def test_fetch_filing_document_rejects_mismatched_cik() -> None:
+    """A filing must not be associated with a different SEC company."""
+
+    async with SecEdgarClient(sec_settings()) as client:
+        with pytest.raises(
+            SecEdgarPayloadError,
+            match="does not match the requested CIK",
+        ):
+            await client.fetch_filing_document(
+                "789019",
+                sample_filing(),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "primary_document",
+    [
+        "folder/document.htm",
+        "folder\\document.htm",
+        "..",
+    ],
+)
+async def test_fetch_filing_document_rejects_unsafe_file_names(
+    primary_document: str,
+) -> None:
+    """Archive URLs must not accept nested or traversal-style file names."""
+
+    async with SecEdgarClient(sec_settings()) as client:
+        with pytest.raises(SecEdgarPayloadError, match="safe file name"):
+            await client.fetch_filing_document(
+                "320193",
+                sample_filing(primary_document=primary_document),
+            )
+
+
+@pytest.mark.asyncio
+async def test_fetch_filing_document_rejects_empty_content() -> None:
+    """An empty SEC response must not produce a persisted content hash."""
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b""))
+
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = SecEdgarClient(sec_settings(), http_client=http_client)
+
+        with pytest.raises(SecEdgarPayloadError, match="document is empty"):
+            await client.fetch_filing_document(
+                "320193",
+                sample_filing(),
+            )

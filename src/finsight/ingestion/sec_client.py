@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Self, cast
 
@@ -12,9 +14,14 @@ import httpx
 from pydantic import ValidationError
 
 from finsight.config.settings import Settings
-from finsight.ingestion.sec_schemas import SecCompanySubmissions, normalize_cik
+from finsight.ingestion.sec_schemas import (
+    SecCompanySubmissions,
+    SecFilingMetadata,
+    normalize_cik,
+)
 
 SEC_DATA_BASE_URL = "https://data.sec.gov"
+SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 SleepFunction = Callable[[float], Awaitable[None]]
@@ -27,6 +34,16 @@ class SecEdgarError(RuntimeError):
 
 class SecEdgarPayloadError(SecEdgarError):
     """Raised when the SEC response violates the expected data contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class SecFilingDocument:
+    """Downloaded SEC filing content with immutable provenance."""
+
+    source_url: str
+    content: bytes
+    content_hash: str
+    content_type: str | None
 
 
 class SecEdgarClient:
@@ -94,8 +111,60 @@ class SecEdgarClient:
                 f"SEC submissions payload failed validation for CIK {normalized_cik}"
             ) from exc
 
+    async def fetch_filing_document(
+        self,
+        cik: str | int,
+        filing: SecFilingMetadata,
+    ) -> SecFilingDocument:
+        """Download one primary filing document with provenance and SHA-256."""
+
+        normalized_cik = normalize_cik(cik)
+
+        if not filing.accession_number.startswith(f"{normalized_cik}-"):
+            raise SecEdgarPayloadError("filing accession number does not match the requested CIK")
+
+        if (
+            "/" in filing.primary_document
+            or "\\" in filing.primary_document
+            or filing.primary_document in {".", ".."}
+        ):
+            raise SecEdgarPayloadError("primary document must be a safe file name")
+
+        archive_cik = str(int(normalized_cik))
+        accession_path = filing.accession_number.replace("-", "")
+        source_url = (
+            f"{SEC_ARCHIVES_BASE_URL}/{archive_cik}/{accession_path}/{filing.primary_document}"
+        )
+        response = await self._request(source_url)
+        content = response.content
+
+        if not content:
+            raise SecEdgarPayloadError("SEC filing document is empty")
+
+        return SecFilingDocument(
+            source_url=source_url,
+            content=content,
+            content_hash=hashlib.sha256(content).hexdigest(),
+            content_type=response.headers.get("Content-Type"),
+        )
+
     async def _request_json(self, url: str) -> dict[str, object]:
-        """Request a JSON object with pacing and bounded retries."""
+        """Request and validate a top-level JSON object."""
+
+        response = await self._request(url)
+
+        try:
+            payload: object = response.json()
+        except ValueError as exc:
+            raise SecEdgarPayloadError("SEC returned invalid JSON") from exc
+
+        if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
+            raise SecEdgarPayloadError("SEC JSON response must be an object")
+
+        return cast(dict[str, object], payload)
+
+    async def _request(self, url: str) -> httpx.Response:
+        """Perform one paced request with bounded retries."""
 
         for attempt in range(1, self._settings.sec_retry_attempts + 1):
             await self._pace_request()
@@ -117,16 +186,7 @@ class SecEdgarClient:
                 continue
 
             response.raise_for_status()
-
-            try:
-                payload: object = response.json()
-            except ValueError as exc:
-                raise SecEdgarPayloadError("SEC returned invalid JSON") from exc
-
-            if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
-                raise SecEdgarPayloadError("SEC JSON response must be an object")
-
-            return cast(dict[str, object], payload)
+            return response
 
         raise SecEdgarError("SEC request retry loop ended unexpectedly")
 
