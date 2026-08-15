@@ -45,3 +45,31 @@ async def test_postgres_connection_and_required_extensions() -> None:
 
     assert extensions["vector"] == "0.8.6"
     assert "pg_trgm" in extensions
+
+
+@pytest.mark.asyncio
+async def test_migrations_create_sec_filing_tables() -> None:
+    """Alembic should create the SEC filing persistence schema."""
+
+    engine = create_database_engine(Settings())
+
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' "
+                    "AND tablename IN "
+                    "('companies', 'filings', 'filing_sections', 'filing_chunks')"
+                )
+            )
+            tables = set(result.scalars().all())
+    finally:
+        await engine.dispose()
+
+    assert tables == {
+        "companies",
+        "filings",
+        "filing_sections",
+        "filing_chunks",
+    }

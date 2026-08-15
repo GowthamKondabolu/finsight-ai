@@ -49,6 +49,12 @@ jobs:
       - name: Start PostgreSQL
         run: docker compose up -d --wait postgres
 
+      - name: Apply database migrations
+        run: alembic upgrade head
+
+      - name: Verify database schema is current
+        run: alembic check
+
       - name: Run unit and integration tests
         run: pytest
         env:
