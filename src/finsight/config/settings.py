@@ -1,10 +1,15 @@
 """Typed application configuration."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOCAL_DATABASE_PASSWORD = "finsight-local-only"
+DEFAULT_DATABASE_URL = (
+    f"postgresql+psycopg://finsight:{LOCAL_DATABASE_PASSWORD}@localhost:5432/finsight"
+)
 
 
 class Settings(BaseSettings):
@@ -25,6 +30,34 @@ class Settings(BaseSettings):
         default="FinSightAI/0.1 contact@example.com",
         min_length=10,
     )
+
+    database_url: SecretStr = Field(
+        default=SecretStr(DEFAULT_DATABASE_URL),
+        min_length=1,
+    )
+    database_echo: bool = False
+    database_pool_size: int = Field(default=5, ge=1, le=50)
+    database_max_overflow: int = Field(default=10, ge=0, le=100)
+    database_pool_timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+    @model_validator(mode="after")
+    def validate_database_configuration(self) -> Self:
+        """Reject unsupported URLs and unsafe production credentials."""
+
+        database_url = self.database_url.get_secret_value()
+
+        if not database_url.startswith("postgresql+psycopg://"):
+            raise ValueError("database_url must use the postgresql+psycopg driver")
+
+        if (
+            self.environment in {"staging", "production"}
+            and LOCAL_DATABASE_PASSWORD in database_url
+        ):
+            raise ValueError(
+                "staging and production environments cannot use the local database password"
+            )
+
+        return self
 
 
 @lru_cache(maxsize=1)
