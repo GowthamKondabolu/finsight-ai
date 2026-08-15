@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Python quality and tests
+    name: Python quality, security, and integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -41,13 +41,22 @@ jobs:
         run: ruff check .
 
       - name: Run mypy
-        run: mypy src
+        run: mypy src tests
 
-      - name: Run tests
+      - name: Validate Docker Compose
+        run: docker compose config
+
+      - name: Start PostgreSQL
+        run: docker compose up -d --wait postgres
+
+      - name: Run unit and integration tests
         run: pytest
+        env:
+          FINSIGHT_RUN_DATABASE_TESTS: "1"
 
       - name: Audit Python dependencies
         run: pip-audit
 
-      - name: Validate Docker Compose
-        run: docker compose config
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker compose down --volumes --remove-orphans
