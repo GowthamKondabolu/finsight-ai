@@ -26,9 +26,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from finsight.config.settings import DEFAULT_EMBEDDING_DIMENSIONS
 from finsight.storage.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
-EMBEDDING_DIMENSIONS = 1536
+EMBEDDING_DIMENSIONS = DEFAULT_EMBEDDING_DIMENSIONS
 
 
 class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: SEC company facts and normalized financial observations**
+**Current milestone: Retrieval embeddings and pgvector indexing**
 
 Implemented:
 
@@ -32,6 +32,11 @@ Implemented:
 - Typed SEC company-facts ingestion for `us-gaap` and `dei` taxonomies
 - Exact decimal financial observations with deterministic source identities
 - Idempotent bulk fact persistence indexed by issuer, concept, and period
+- Provider-independent asynchronous embedding contract
+- Secure OpenAI `text-embedding-3-small` adapter with explicit 1,536-dimension vectors
+- Bounded, issuer-filtered, idempotent chunk embedding backfills
+- Optimistic content-hash writes and persisted embedding-model provenance
+- `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
 - Mocked HTTP unit tests and real PostgreSQL integration tests
@@ -39,9 +44,9 @@ Implemented:
 
 Planned next:
 
-- Embedding generation and pgvector persistence
 - Hybrid semantic and keyword retrieval
-- Reranking and citation-grounded generation
+- Metadata filtering and reranking
+- Citation-grounded generation
 - LangGraph investigation workflow
 - MCP-compatible financial-data tools
 - Numerical verification and safety guardrails
@@ -75,7 +80,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, and PostgreSQL persistence are implemented and integration-tested. Retrieval, agent orchestration, validation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, and embedding persistence are implemented and integration-tested. Hybrid retrieval, agent orchestration, validation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -85,6 +90,7 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Data source | SEC EDGAR public filings and company facts |
 | Relational storage | PostgreSQL 17 |
 | Vector search | pgvector |
+| Embeddings | Provider abstraction, OpenAI `text-embedding-3-small` production adapter |
 | Keyword search | PostgreSQL full-text and trigram search |
 | Retrieval | Hybrid retrieval, metadata filtering, reranking |
 | Agent orchestration | LangGraph |
@@ -158,7 +164,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services.
+Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services. Set `FINSIGHT_OPENAI_API_KEY` only when generating production embeddings.
 
 Do not commit `.env` or production credentials.
 
@@ -256,6 +262,20 @@ finsight ingest-company-facts \
 
 The command reports source, selected, inserted, and existing observation counts. Values are stored as exact PostgreSQL numerics rather than binary floating-point values. Each observation retains its taxonomy, concept, unit, period, filing accession, fiscal context, frame, and deterministic identity. See [SEC company-facts ingestion](docs/company_facts.md) for the normalization contract and limitations.
 
+### Generate retrieval embeddings
+
+After filing ingestion, generate embeddings for missing or stale chunks:
+
+```bash
+finsight embed-chunks \
+  --cik 0000320193 \
+  --limit 500
+```
+
+Omit `--cik` to backfill across all issuers. The command sends bounded batches to the configured provider, persists exactly 1,536 float dimensions in pgvector, and records the embedding model on each chunk. A repeat run skips chunks already embedded by that model. Changing the configured model makes existing vectors eligible for a controlled refresh.
+
+The database transaction is opened only after each external embedding response returns. Writes require the chunk’s content hash to remain unchanged, so concurrent document changes produce an explicit retry error rather than attaching a stale vector. See [Embedding pipeline](docs/embeddings.md) for the contract, security controls, and limitations. The adapter follows the [official OpenAI embeddings guidance](https://developers.openai.com/api/docs/guides/embeddings).
+
 ### Run the API
 
 ```bash
@@ -307,7 +327,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 3. ✅ Build policy-compliant SEC submissions and primary filing-document ingestion with an idempotent CLI workflow.
 4. ✅ Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
 5. ✅ Add SEC company-facts ingestion and normalized financial metrics.
-6. Add embeddings, hybrid retrieval, metadata filtering, and reranking.
+6. 🔄 Add embeddings, hybrid retrieval, metadata filtering, and reranking. Embedding generation and persistence are complete.
 7. Build citation-grounded answer generation and numerical validation.
 8. Add LangGraph orchestration, MCP tools, and human approval states.
 9. Create retrieval, faithfulness, citation, safety, and latency evaluations.

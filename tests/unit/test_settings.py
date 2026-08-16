@@ -118,3 +118,65 @@ def test_sec_client_settings_reject_values_outside_policy_bounds(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_embedding_settings_are_safe_and_schema_compatible() -> None:
+    """Embedding defaults should match the persisted pgvector column."""
+
+    settings = Settings()
+
+    assert settings.openai_api_key is None
+    assert settings.embedding_model == "text-embedding-3-small"
+    assert settings.embedding_dimensions == 1536
+    assert settings.embedding_batch_size == 100
+
+
+def test_embedding_settings_read_secret_and_batch_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deployment settings should load and mask an explicit API secret."""
+
+    monkeypatch.setenv("FINSIGHT_OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("FINSIGHT_EMBEDDING_MODEL", "custom-model")
+    monkeypatch.setenv("FINSIGHT_EMBEDDING_BATCH_SIZE", "32")
+
+    settings = Settings()
+
+    assert settings.openai_api_key is not None
+    assert settings.openai_api_key.get_secret_value() == "test-secret"
+    assert str(settings.openai_api_key) == "**********"
+    assert settings.embedding_model == "custom-model"
+    assert settings.embedding_batch_size == 32
+
+
+def test_embedding_settings_treat_blank_secret_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The checked-in empty example value should not become a fake credential."""
+
+    monkeypatch.setenv("FINSIGHT_OPENAI_API_KEY", "   ")
+
+    assert Settings().openai_api_key is None
+
+
+@pytest.mark.parametrize(
+    ("environment_variable", "value", "message"),
+    [
+        ("FINSIGHT_EMBEDDING_DIMENSIONS", "512", "pgvector schema"),
+        ("FINSIGHT_EMBEDDING_BATCH_SIZE", "0", "greater than or equal"),
+        ("FINSIGHT_EMBEDDING_BATCH_SIZE", "2049", "less than or equal"),
+        ("FINSIGHT_EMBEDDING_MODEL", "", "at least 1 character"),
+    ],
+)
+def test_embedding_settings_reject_incompatible_values(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_variable: str,
+    value: str,
+    message: str,
+) -> None:
+    """Configuration must not produce vectors incompatible with storage."""
+
+    monkeypatch.setenv(environment_variable, value)
+
+    with pytest.raises(ValidationError, match=message):
+        Settings()

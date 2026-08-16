@@ -21,6 +21,12 @@ from finsight.ingestion.service import (
     SecIngestionResult,
     ingest_company_filings,
 )
+from finsight.retrieval.embedding_service import (
+    MAX_EMBEDDING_CHUNKS_PER_RUN,
+    EmbeddingRunResult,
+    embed_pending_chunks,
+)
+from finsight.retrieval.embeddings import OpenAIEmbeddingProvider
 from finsight.storage.database import (
     create_database_engine,
     create_session_factory,
@@ -76,6 +82,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="XBRL taxonomy to ingest. Repeat for multiple taxonomies.",
     )
 
+    embeddings_parser = subparsers.add_parser(
+        "embed-chunks",
+        help="Generate embeddings for missing or stale filing chunks.",
+    )
+    embeddings_parser.add_argument(
+        "--cik",
+        default=None,
+        help="Optional SEC CIK used to restrict the embedding backfill.",
+    )
+    embeddings_parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help=(f"Maximum chunks to embed, from 1 to {MAX_EMBEDDING_CHUNKS_PER_RUN}."),
+    )
+
     return parser
 
 
@@ -127,13 +149,38 @@ async def run_company_facts_ingestion(
         await engine.dispose()
 
 
-def format_ingestion_result(
-    result: SecIngestionResult | CompanyFactsIngestionResult,
+async def run_embedding_backfill(
+    *,
+    cik: str | None,
+    limit: int,
+) -> EmbeddingRunResult:
+    """Generate chunk embeddings and release API and database resources."""
+
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+
+    try:
+        async with OpenAIEmbeddingProvider.from_settings(settings) as provider:
+            return await embed_pending_chunks(
+                provider=provider,
+                session_factory=session_factory,
+                limit=limit,
+                batch_size=min(settings.embedding_batch_size, limit),
+                cik=cik,
+            )
+    finally:
+        await engine.dispose()
+
+
+def format_operation_result(
+    result: SecIngestionResult | CompanyFactsIngestionResult | EmbeddingRunResult,
 ) -> str:
-    """Serialize an ingestion result as readable JSON."""
+    """Serialize an operation result as readable JSON."""
 
     payload = asdict(result)
-    payload["company_id"] = str(result.company_id)
+    if "company_id" in payload:
+        payload["company_id"] = str(payload["company_id"])
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
@@ -147,14 +194,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         forms: Collection[str] = (
             arguments.forms if arguments.forms is not None else DEFAULT_FILING_FORMS
         )
-        result: SecIngestionResult | CompanyFactsIngestionResult = asyncio.run(
+        result: SecIngestionResult | CompanyFactsIngestionResult | EmbeddingRunResult = asyncio.run(
             run_sec_ingestion(
                 cik=str(arguments.cik),
                 forms=forms,
                 limit=int(arguments.limit),
             )
         )
-    else:
+    elif arguments.command == "ingest-company-facts":
         taxonomies: Collection[str] = (
             arguments.taxonomies
             if arguments.taxonomies is not None
@@ -166,6 +213,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 taxonomies=taxonomies,
             )
         )
+    else:
+        result = asyncio.run(
+            run_embedding_backfill(
+                cik=str(arguments.cik) if arguments.cik is not None else None,
+                limit=int(arguments.limit),
+            )
+        )
 
-    print(format_ingestion_result(result))
+    print(format_operation_result(result))
     return 0
