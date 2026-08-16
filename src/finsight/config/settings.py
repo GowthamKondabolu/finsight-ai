@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     )
     embedding_batch_size: int = Field(default=100, ge=1, le=2048)
 
+    generation_model: str = Field(default="gpt-5.6-luna", min_length=1, max_length=100)
+    generation_max_output_tokens: int = Field(default=2_000, ge=256, le=20_000)
+    generation_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
+
     database_url: SecretStr = Field(
         default=SecretStr(DEFAULT_DATABASE_URL),
         min_length=1,
