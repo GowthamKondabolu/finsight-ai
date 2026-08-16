@@ -16,7 +16,7 @@ from finsight.storage.database import (
     create_session_factory,
     session_scope,
 )
-from finsight.storage.models import Company, Filing
+from finsight.storage.models import Company, Filing, FilingChunk, FilingSection
 
 RUN_DATABASE_TESTS = os.getenv("FINSIGHT_RUN_DATABASE_TESTS") == "1"
 
@@ -118,9 +118,23 @@ async def test_sec_ingestion_is_idempotent_across_http_and_postgres() -> None:
             )
             filing = filing_result.scalar_one()
 
+            section_result = await verification_session.execute(
+                select(FilingSection).where(FilingSection.filing_id == filing.id)
+            )
+            section = section_result.scalar_one()
+
+            chunk_result = await verification_session.execute(
+                select(FilingChunk).where(FilingChunk.section_id == section.id)
+            )
+            chunk = chunk_result.scalar_one()
+
         assert first_result.created_filings == 1
+        assert first_result.created_sections == 1
+        assert first_result.created_chunks == 1
         assert first_result.skipped_existing_filings == 0
         assert second_result.created_filings == 0
+        assert second_result.created_sections == 0
+        assert second_result.created_chunks == 0
         assert second_result.skipped_existing_filings == 1
 
         assert requested_urls.count(submissions_url) == 2
@@ -135,7 +149,17 @@ async def test_sec_ingestion_is_idempotent_across_http_and_postgres() -> None:
             "provider": "sec-edgar",
             "content_type": "text/html",
             "content_length": len(filing_content),
+            "parser_version": "sec-html-v1",
+            "tokenizer_name": "cl100k_base",
+            "section_count": 1,
+            "chunk_count": 1,
         }
+        assert section.section_name == "Document"
+        assert section.content == "Integration filing"
+        assert section.source_metadata["parser_version"] == "sec-html-v1"
+        assert chunk.content == "Integration filing"
+        assert chunk.token_count > 0
+        assert chunk.source_metadata["token_start"] == 0
     finally:
         async with session_scope(session_factory) as cleanup_session:
             await cleanup_session.execute(delete(Company).where(Company.cik == test_cik))

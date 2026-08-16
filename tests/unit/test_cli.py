@@ -23,6 +23,8 @@ def make_ingestion_result() -> SecIngestionResult:
         selected_filings=1,
         downloaded_filings=1,
         created_filings=1,
+        created_sections=2,
+        created_chunks=4,
         skipped_existing_filings=0,
         selected_forms=("10-K",),
     )

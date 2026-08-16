@@ -7,15 +7,18 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finsight.storage.models import Company, Filing
+from finsight.storage.models import Company, Filing, FilingSection
 from finsight.storage.repositories import (
     CompanyUpsert,
+    FilingChunkCreate,
     FilingCreate,
     FilingIdentityConflictError,
     FilingPersistenceError,
+    FilingSectionCreate,
     find_existing_accession_numbers,
     get_filing_by_accession_number,
     store_filing,
+    store_filing_content,
     upsert_company,
 )
 
@@ -159,6 +162,53 @@ async def test_store_filing_returns_newly_inserted_record() -> None:
     assert stored.filing is expected
     assert stored.created is True
     session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_store_filing_content_builds_sections_and_chunks() -> None:
+    """Parsed retrieval records should be attached and flushed in one transaction."""
+
+    session = AsyncMock(spec=AsyncSession)
+    filing_id = uuid4()
+    section_command = FilingSectionCreate(
+        section_name="ITEM 1A. RISK FACTORS",
+        sequence_number=0,
+        content="Cybersecurity risks could affect operations.",
+        content_hash="b" * 64,
+        char_count=43,
+        source_metadata={"parser_version": "sec-html-v1"},
+        chunks=(
+            FilingChunkCreate(
+                chunk_index=0,
+                content="Cybersecurity risks could affect operations.",
+                content_hash="c" * 64,
+                token_count=8,
+                source_metadata={"token_start": 0, "token_end": 8},
+            ),
+        ),
+    )
+
+    stored = await store_filing_content(
+        session,
+        filing_id,
+        [section_command],
+    )
+
+    assert stored.section_count == 1
+    assert stored.chunk_count == 1
+    session.add_all.assert_called_once()
+    session.flush.assert_awaited_once()
+
+    section_models = session.add_all.call_args.args[0]
+    assert len(section_models) == 1
+    section = section_models[0]
+    assert isinstance(section, FilingSection)
+    assert section.filing_id == filing_id
+    assert section.section_name == "ITEM 1A. RISK FACTORS"
+    assert section.source_metadata == {"parser_version": "sec-html-v1"}
+    assert len(section.chunks) == 1
+    assert section.chunks[0].chunk_index == 0
+    assert section.chunks[0].token_count == 8
 
 
 @pytest.mark.asyncio

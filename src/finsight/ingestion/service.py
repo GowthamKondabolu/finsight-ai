@@ -6,14 +6,21 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from uuid import UUID
 
+from finsight.ingestion.document_processing import (
+    ProcessedDocument,
+    SecHtmlDocumentProcessor,
+)
 from finsight.ingestion.sec_client import SecEdgarClient, SecFilingDocument
 from finsight.ingestion.sec_schemas import SecFilingMetadata
 from finsight.storage.database import SessionFactory, session_scope
 from finsight.storage.repositories import (
     CompanyUpsert,
+    FilingChunkCreate,
     FilingCreate,
+    FilingSectionCreate,
     find_existing_accession_numbers,
     store_filing,
+    store_filing_content,
     upsert_company,
 )
 
@@ -31,6 +38,8 @@ class SecIngestionResult:
     selected_filings: int
     downloaded_filings: int
     created_filings: int
+    created_sections: int
+    created_chunks: int
     skipped_existing_filings: int
     selected_forms: tuple[str, ...]
 
@@ -42,6 +51,7 @@ async def ingest_company_filings(
     cik: str | int,
     forms: Collection[str] = DEFAULT_FILING_FORMS,
     limit: int = 10,
+    document_processor: SecHtmlDocumentProcessor | None = None,
 ) -> SecIngestionResult:
     """Ingest selected recent SEC filings without long database transactions."""
 
@@ -68,7 +78,8 @@ async def ingest_company_filings(
                 [filing.accession_number for filing in selected],
             )
 
-    downloaded: list[tuple[SecFilingMetadata, SecFilingDocument]] = []
+    processor = document_processor or SecHtmlDocumentProcessor()
+    downloaded: list[tuple[SecFilingMetadata, SecFilingDocument, ProcessedDocument]] = []
 
     for filing in selected:
         if filing.accession_number in existing_accessions:
@@ -78,9 +89,12 @@ async def ingest_company_filings(
             submissions.cik,
             filing,
         )
-        downloaded.append((filing, document))
+        processed_document = processor.process(document.content)
+        downloaded.append((filing, document, processed_document))
 
     created_filings = 0
+    created_sections = 0
+    created_chunks = 0
 
     async with session_scope(session_factory) as write_session:
         company = await upsert_company(
@@ -94,7 +108,7 @@ async def ingest_company_filings(
             ),
         )
 
-        for filing, document in downloaded:
+        for filing, document, processed_document in downloaded:
             stored = await store_filing(
                 write_session,
                 FilingCreate(
@@ -110,10 +124,53 @@ async def ingest_company_filings(
                         "provider": "sec-edgar",
                         "content_type": document.content_type,
                         "content_length": len(document.content),
+                        "parser_version": processed_document.parser_version,
+                        "tokenizer_name": processed_document.tokenizer_name,
+                        "section_count": len(processed_document.sections),
+                        "chunk_count": processed_document.chunk_count,
                     },
                 ),
             )
             created_filings += int(stored.created)
+
+            if stored.created:
+                stored_content = await store_filing_content(
+                    write_session,
+                    stored.filing.id,
+                    tuple(
+                        FilingSectionCreate(
+                            section_name=section.section_name,
+                            sequence_number=section.sequence_number,
+                            content=section.content,
+                            content_hash=section.content_hash,
+                            char_count=section.char_count,
+                            source_metadata={
+                                "parser_version": processed_document.parser_version,
+                                "tokenizer_name": processed_document.tokenizer_name,
+                                "document_hash": processed_document.document_hash,
+                            },
+                            chunks=tuple(
+                                FilingChunkCreate(
+                                    chunk_index=chunk.chunk_index,
+                                    content=chunk.content,
+                                    content_hash=chunk.content_hash,
+                                    token_count=chunk.token_count,
+                                    source_metadata={
+                                        "parser_version": processed_document.parser_version,
+                                        "tokenizer_name": processed_document.tokenizer_name,
+                                        "section_sequence": section.sequence_number,
+                                        "token_start": chunk.token_start,
+                                        "token_end": chunk.token_end,
+                                    },
+                                )
+                                for chunk in section.chunks
+                            ),
+                        )
+                        for section in processed_document.sections
+                    ),
+                )
+                created_sections += stored_content.section_count
+                created_chunks += stored_content.chunk_count
 
         company_id = company.id
 
@@ -124,6 +181,8 @@ async def ingest_company_filings(
         selected_filings=len(selected),
         downloaded_filings=len(downloaded),
         created_filings=created_filings,
+        created_sections=created_sections,
+        created_chunks=created_chunks,
         skipped_existing_filings=len(selected) - created_filings,
         selected_forms=tuple(sorted(selected_forms)),
     )

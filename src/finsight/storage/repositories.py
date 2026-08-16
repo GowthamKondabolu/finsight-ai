@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finsight.storage.models import Company, Filing
+from finsight.storage.models import Company, Filing, FilingChunk, FilingSection
 
 
 class FilingPersistenceError(RuntimeError):
@@ -55,6 +55,38 @@ class StoredFiling:
 
     filing: Filing
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FilingChunkCreate:
+    """One deterministic retrieval chunk within a filing section."""
+
+    chunk_index: int
+    content: str
+    content_hash: str
+    token_count: int
+    source_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class FilingSectionCreate:
+    """One source-preserving section and its retrieval chunks."""
+
+    section_name: str
+    sequence_number: int
+    content: str
+    content_hash: str
+    char_count: int
+    chunks: tuple[FilingChunkCreate, ...] = ()
+    source_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFilingContent:
+    """Counts produced when section and chunk records are persisted."""
+
+    section_count: int
+    chunk_count: int
 
 
 async def upsert_company(
@@ -152,6 +184,47 @@ async def store_filing(
 
     _verify_existing_filing(existing, command)
     return StoredFiling(filing=existing, created=False)
+
+
+async def store_filing_content(
+    session: AsyncSession,
+    filing_id: UUID,
+    sections: Sequence[FilingSectionCreate],
+) -> StoredFilingContent:
+    """Persist parsed content for a newly created filing in the same transaction."""
+
+    section_models: list[FilingSection] = []
+    chunk_count = 0
+
+    for section in sections:
+        section_model = FilingSection(
+            filing_id=filing_id,
+            section_name=section.section_name,
+            sequence_number=section.sequence_number,
+            content=section.content,
+            content_hash=section.content_hash,
+            char_count=section.char_count,
+            source_metadata=section.source_metadata,
+        )
+        section_model.chunks = [
+            FilingChunk(
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                content_hash=chunk.content_hash,
+                token_count=chunk.token_count,
+                source_metadata=chunk.source_metadata,
+            )
+            for chunk in section.chunks
+        ]
+        chunk_count += len(section_model.chunks)
+        section_models.append(section_model)
+
+    session.add_all(section_models)
+    await session.flush()
+    return StoredFilingContent(
+        section_count=len(section_models),
+        chunk_count=chunk_count,
+    )
 
 
 def _verify_existing_filing(
