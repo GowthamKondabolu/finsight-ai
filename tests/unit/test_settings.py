@@ -1,7 +1,9 @@
 """Tests for application configuration."""
 
+from typing import Literal
+
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import HttpUrl, SecretStr, ValidationError
 
 from finsight.config.settings import Settings
 
@@ -38,6 +40,7 @@ def test_settings_read_prefixed_environment_variables(
         "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET",
         "staging-test-assignment-secret-32-characters",
     )
+    monkeypatch.setenv("FINSIGHT_API_AUTH_TOKEN", "s" * 32)
 
     settings = Settings()
 
@@ -47,6 +50,102 @@ def test_settings_read_prefixed_environment_variables(
     assert settings.database_pool_size == 8
     assert settings.database_max_overflow == 12
     assert settings.database_pool_timeout_seconds == 45
+
+
+def test_observability_settings_load_safe_deployment_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OTLP configuration should remain optional, bounded, and secret-safe."""
+
+    monkeypatch.setenv("FINSIGHT_LOG_JSON", "false")
+    monkeypatch.setenv("FINSIGHT_OTEL_SERVICE_NAME", "finsight-staging-api")
+    monkeypatch.setenv("FINSIGHT_OTEL_TRACE_SAMPLE_RATIO", "0.25")
+    monkeypatch.setenv(
+        "FINSIGHT_OTEL_TRACES_ENDPOINT",
+        "https://telemetry.example.org/otel",
+    )
+    monkeypatch.setenv("FINSIGHT_OTEL_EXPORT_HEADERS", "Authorization=Basic opaque")
+    monkeypatch.setenv("FINSIGHT_READINESS_TIMEOUT_SECONDS", "5")
+
+    settings = Settings()
+
+    assert settings.log_json is False
+    assert settings.otel_service_name == "finsight-staging-api"
+    assert settings.otel_trace_sample_ratio == 0.25
+    assert str(settings.otel_traces_endpoint) == "https://telemetry.example.org/otel"
+    assert settings.otel_export_headers is not None
+    assert str(settings.otel_export_headers) == "**********"
+    assert settings.readiness_timeout_seconds == 5.0
+
+
+@pytest.mark.parametrize("sample_ratio", ["-0.1", "1.1"])
+def test_observability_settings_reject_invalid_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_ratio: str,
+) -> None:
+    """Head-sampling probability must remain within the closed unit interval."""
+
+    monkeypatch.setenv("FINSIGHT_OTEL_TRACE_SAMPLE_RATIO", sample_ratio)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_observability_settings_reject_export_when_disabled() -> None:
+    """A contradictory disabled exporter configuration should fail closed."""
+
+    with pytest.raises(ValidationError, match="cannot be configured"):
+        Settings(
+            observability_enabled=False,
+            otel_traces_endpoint=HttpUrl("https://telemetry.example.org/otel"),
+        )
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployed_environments_require_api_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: Literal["staging", "production"],
+) -> None:
+    """A deployed API must not start without its private service token."""
+
+    monkeypatch.setenv("FINSIGHT_API_AUTH_TOKEN", "")
+    monkeypatch.setenv("FINSIGHT_ENVIRONMENT", environment)
+
+    with pytest.raises(ValidationError, match="api_auth_token is required"):
+        Settings()
+
+
+def test_blank_optional_observability_values_are_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The checked-in example environment must parse without fake endpoints."""
+
+    monkeypatch.setenv("FINSIGHT_OTEL_TRACES_ENDPOINT", "")
+    monkeypatch.setenv("FINSIGHT_OTEL_METRICS_ENDPOINT", "   ")
+    monkeypatch.setenv("FINSIGHT_OTEL_EXPORT_HEADERS", "")
+    monkeypatch.setenv("FINSIGHT_API_AUTH_TOKEN", "")
+
+    settings = Settings()
+
+    assert settings.otel_traces_endpoint is None
+    assert settings.otel_metrics_endpoint is None
+    assert settings.otel_export_headers is None
+    assert settings.api_auth_token is None
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://user:secret@telemetry.example.org/otel",
+        "https://telemetry.example.org/otel?token=secret",
+        "https://telemetry.example.org/otel#fragment",
+    ],
+)
+def test_observability_settings_reject_secret_bearing_endpoints(endpoint: str) -> None:
+    """Exporter credentials belong in the masked header setting, never the URL."""
+
+    with pytest.raises(ValidationError, match="cannot contain credentials"):
+        Settings(otel_traces_endpoint=HttpUrl(endpoint))
 
 
 def test_experiment_assignment_secret_is_loaded_and_masked(

@@ -26,3 +26,15 @@ export function resolveBackendUrl(path: string): URL {
   }
   return new URL(path, `${base.toString().replace(/\/$/, "")}/`);
 }
+
+export function backendRequestHeaders(method: string): HeadersInit | undefined {
+  const token = process.env.FINSIGHT_API_AUTH_TOKEN?.trim();
+  const headers: Record<string, string> = {};
+  if (method === "POST") {
+    headers["Content-Type"] = "application/json";
+  }
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}

@@ -19,6 +19,18 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class ReadinessResponse(BaseModel):
+    """Dependency-aware readiness response contract."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["ready"] = "ready"
+    service: str
+    version: str
+    environment: str
+    checks: dict[str, Literal["ok"]]
+
+
 class ExperimentAssignmentRequest(BaseModel):
     """Stable randomization identity that is HMACed before persistence."""
 

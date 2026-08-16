@@ -17,7 +17,7 @@ jobs:
   quality:
     name: Python quality, security, and integration tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -45,10 +45,12 @@ jobs:
         run: |
           postgres_password="$(openssl rand -hex 24)"
           assignment_secret="$(openssl rand -hex 32)"
+          api_auth_token="$(openssl rand -hex 32)"
           {
             echo "POSTGRES_PASSWORD=${postgres_password}"
             echo "FINSIGHT_DATABASE_URL=postgresql+psycopg://finsight:${postgres_password}@localhost:5432/finsight"
             echo "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET=${assignment_secret}"
+            echo "FINSIGHT_API_AUTH_TOKEN=${api_auth_token}"
           } >> "$GITHUB_ENV"
 
       - name: Check formatting
@@ -69,6 +71,34 @@ jobs:
           npm --prefix apps/web run typecheck
           npm --prefix apps/web test
           npm --prefix apps/web run build
+
+      - name: Build hardened application images
+        run: |
+          docker build --tag finsight-api:local .
+          docker build --tag finsight-web:local apps/web
+          test "$(docker image inspect finsight-api:local --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker image inspect finsight-web:local --format '{{.Config.User}}')" = "10001:10001"
+
+      - name: Scan API image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: finsight-api:local
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL
+
+      - name: Scan web image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: finsight-web:local
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL
+          skip-setup-trivy: true
 
       - name: Validate offline evaluation contract
         run: |
@@ -108,6 +138,13 @@ jobs:
         run: pytest
         env:
           FINSIGHT_RUN_DATABASE_TESTS: "1"
+
+      - name: Smoke test composed API and analyst application
+        run: |
+          docker compose --profile application up -d --wait
+          curl --fail --silent --show-error http://127.0.0.1:8000/health
+          curl --fail --silent --show-error http://127.0.0.1:8000/ready
+          curl --fail --silent --show-error http://127.0.0.1:3000 > /dev/null
 
       - name: Audit Python dependencies
         run: pip-audit

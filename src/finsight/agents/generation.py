@@ -11,6 +11,7 @@ from openai.types.shared_params import Reasoning
 
 from finsight.agents.contracts import FinancialFactEvidence, GroundedAnswerDraft
 from finsight.config.settings import Settings
+from finsight.observability import operation_span
 from finsight.retrieval.search import HybridSearchResult
 
 
@@ -170,15 +171,35 @@ class OpenAIAnswerGenerator:
     ) -> GroundedAnswerDraft:
         """Request strict structured claims without provider-side response storage."""
 
-        response = await self._client.responses.parse(
-            model=self._model_name,
-            instructions=GENERATION_INSTRUCTIONS,
-            input=build_generation_input(question=question, passages=passages, facts=facts),
-            text_format=GroundedAnswerDraft,
-            max_output_tokens=self._max_output_tokens,
-            reasoning=Reasoning(effort=self._reasoning_effort),
-            store=False,
-        )
+        with operation_span(
+            "generate_content openai",
+            {
+                "gen_ai.operation.name": "generate_content",
+                "gen_ai.provider.name": "openai",
+                "gen_ai.request.model": self._model_name,
+                "gen_ai.request.max_tokens": self._max_output_tokens,
+            },
+        ) as span:
+            response = await self._client.responses.parse(
+                model=self._model_name,
+                instructions=GENERATION_INSTRUCTIONS,
+                input=build_generation_input(
+                    question=question,
+                    passages=passages,
+                    facts=facts,
+                ),
+                text_format=GroundedAnswerDraft,
+                max_output_tokens=self._max_output_tokens,
+                reasoning=Reasoning(effort=self._reasoning_effort),
+                store=False,
+            )
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", None)
+            output_tokens = getattr(usage, "output_tokens", None)
+            if isinstance(input_tokens, int):
+                span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+            if isinstance(output_tokens, int):
+                span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
         parsed = response.output_parsed
         if parsed is None:
             reason = (
