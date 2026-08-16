@@ -30,6 +30,9 @@ class Settings(BaseSettings):
         default="FinSightAI/0.1 contact@example.com",
         min_length=10,
     )
+    sec_request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
+    sec_requests_per_second: float = Field(default=5.0, gt=0.0, le=10.0)
+    sec_retry_attempts: int = Field(default=4, ge=1, le=10)
 
     database_url: SecretStr = Field(
         default=SecretStr(DEFAULT_DATABASE_URL),
