@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { isAllowedApiPath, resolveBackendUrl } from "@/lib/proxy";
+import {
+  backendRequestHeaders,
+  isAllowedApiPath,
+  resolveBackendUrl,
+} from "@/lib/proxy";
 
 const ALLOWED_METHODS = new Set(["GET", "POST"]);
 const MAX_REQUEST_BYTES = 32_768;
@@ -27,14 +31,21 @@ async function forward(request: NextRequest, pathParts: string[]): Promise<NextR
     const response = await fetch(resolveBackendUrl(path), {
       method: request.method,
       body: requestBody,
-      headers: request.method === "POST" ? { "Content-Type": "application/json" } : undefined,
+      headers: backendRequestHeaders(request.method),
       cache: "no-store",
       signal: controller.signal,
     });
     const body = await response.text();
+    const responseHeaders = new Headers({
+      "Content-Type": response.headers.get("Content-Type") ?? "application/json",
+    });
+    const requestId = response.headers.get("X-Request-ID");
+    if (requestId) {
+      responseHeaders.set("X-Request-ID", requestId);
+    }
     return new NextResponse(body, {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("Content-Type") ?? "application/json" },
+      headers: responseHeaders,
     });
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError"

@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Analyst-facing investigation workspace**
+**Current milestone: Production observability and container runtime**
 
 Implemented:
 
@@ -68,8 +68,17 @@ Implemented:
 - Evidence-first answer rendering with claim-to-source citations and numerical checks
 - Durable workflow restoration, explicit approve-or-reject review, and post-review feedback
 - Same-origin, allowlisted API proxy that exposes only health and investigation routes
+- Server-to-server bearer authentication for all versioned API routes
 - Clearly labelled interface fixture that never invokes a model or claims live evidence
 - Frontend linting, strict TypeScript validation, component tests, and production builds in CI
+- OpenTelemetry request, workflow, retrieval, embedding, and generation spans
+- OTLP/HTTP trace and metric export with optional Langfuse trace compatibility
+- Correlated structured logs with recursive credential redaction
+- GenAI model and token-usage telemetry without prompt or answer content capture
+- Separate liveness and bounded PostgreSQL readiness endpoints
+- Multi-stage, non-root, read-only API and Next.js container images
+- Docker Compose application profile with migration-before-start ordering
+- Container build and critical-vulnerability scanning in CI
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -78,7 +87,7 @@ Implemented:
 
 Planned next:
 
-- Observability, container deployment, Terraform, and AWS infrastructure
+- Terraform-managed AWS infrastructure and deployment automation
 
 ## Problem
 
@@ -107,9 +116,10 @@ flowchart TD
     I --> J["Controlled assignment and telemetry"]
     J --> K["Offline and online evaluation"]
     I --> L["Analyst interface"]
+    I --> M["OTLP traces, metrics, and structured logs"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, controlled experimentation, and the analyst workspace are implemented and tested. Cloud operations remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, controlled experimentation, the analyst workspace, production telemetry, and hardened container builds are implemented and tested. Terraform-managed AWS deployment remains planned.
 
 ## Technology direction
 
@@ -128,8 +138,8 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Evaluation | Retrieval, faithfulness, citation, numerical and latency metrics |
 | Experimentation | Preregistered offline comparisons, deterministic A/B assignment, PostgreSQL telemetry, and guardrail-aware analysis |
 | Analyst application | Next.js 16, React 19, strict TypeScript, same-origin FastAPI proxy |
-| Observability | Structured logs, traces, metrics and evaluation telemetry |
-| Local infrastructure | Docker Compose |
+| Observability | OpenTelemetry OTLP/HTTP, structured redacted logs, GenAI usage spans, optional Langfuse |
+| Local infrastructure | Hardened multi-stage containers and Docker Compose |
 | Cloud target | AWS with infrastructure as code |
 
 Technology choices may evolve as the implementation is benchmarked. The repository will document architectural decisions and trade-offs rather than adding tools solely for breadth.
@@ -203,6 +213,7 @@ environment_file = Path(".env")
 contents = environment_file.read_text(encoding="utf-8")
 database_password = secrets.token_hex(24)
 assignment_secret = secrets.token_hex(32)
+api_auth_token = secrets.token_hex(32)
 contents = contents.replace(
     "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET=\n",
     f"FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET={assignment_secret}\n",
@@ -213,6 +224,10 @@ contents = contents.replace(
     f"postgresql+psycopg://finsight:{database_password}@localhost:5432/finsight\n",
 )
 contents = contents.replace(
+    "FINSIGHT_API_AUTH_TOKEN=\n",
+    f"FINSIGHT_API_AUTH_TOKEN={api_auth_token}\n",
+)
+contents = contents.replace(
     "POSTGRES_PASSWORD=\n",
     f"POSTGRES_PASSWORD={database_password}\n",
 )
@@ -220,7 +235,7 @@ environment_file.write_text(contents, encoding="utf-8")
 PY
 ```
 
-The setup command generates a database password and independent experiment-assignment HMAC secret only in the ignored `.env` file. FinSight and Docker Compose fail closed when these values are absent; the repository contains no working default credentials.
+The setup command generates a database password, independent experiment-assignment HMAC secret, and private API bearer token only in the ignored `.env` file. Deployed environments fail closed when authentication is absent; the repository contains no working default credentials.
 
 Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services. Set `FINSIGHT_OPENAI_API_KEY` only when generating production embeddings or investigation answers.
 
@@ -341,6 +356,7 @@ Start the API after ingesting and embedding filing chunks, then issue a hybrid s
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/retrieval/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${FINSIGHT_API_AUTH_TOKEN}" \
   -d '{
     "query": "What supply-chain risks changed?",
     "cik": "0000320193",
@@ -360,6 +376,7 @@ After ingesting filings and company facts and embedding the filing chunks, reque
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/investigations/answer \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${FINSIGHT_API_AUTH_TOKEN}" \
   -d '{
     "question": "What supply-chain risk is disclosed, and how did revenue change?",
     "cik": "0000320193",
@@ -381,6 +398,7 @@ Use the workflow endpoint when an answer may be released to an analyst. Starting
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/investigations/runs \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${FINSIGHT_API_AUTH_TOKEN}" \
   -d '{
     "thread_id": "00000000-0000-4000-8000-000000000008",
     "question": "What supply-chain risks changed?",
@@ -394,6 +412,7 @@ After checking the answer against its cited filing passages and facts, an attrib
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/investigations/runs/00000000-0000-4000-8000-000000000008/review \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${FINSIGHT_API_AUTH_TOKEN}" \
   -d '{
     "decision": "approve",
     "reviewer_id": "analyst@example.com",
@@ -461,6 +480,33 @@ Open:
 
 - API health check: http://127.0.0.1:8000/health
 - Interactive API documentation: http://127.0.0.1:8000/docs
+
+`/health` is a process liveness check. `/ready` verifies PostgreSQL within a bounded timeout. When `FINSIGHT_API_AUTH_TOKEN` is configured, every `/v1` request must carry `Authorization: Bearer <token>`; the Next.js proxy adds that header only on its server-side hop.
+
+Load `.env` into any shell that issues the authenticated `curl` examples:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+### Run the production containers locally
+
+Build the API and Next.js standalone images, apply migrations, and start the full stack:
+
+```bash
+docker compose --profile application up -d --build
+docker compose ps
+```
+
+Open http://127.0.0.1:3000. Stop the services without deleting PostgreSQL data:
+
+```bash
+docker compose --profile application down
+```
+
+See [Container deployment](docs/container_deployment.md), [Production observability](docs/observability.md), and the [Operations runbook](docs/operations_runbook.md).
 
 ### Run the analyst workspace
 
@@ -537,8 +583,9 @@ The test suite enforces a minimum coverage threshold of 85%.
 9. ✅ Create retrieval, faithfulness, citation, safety, and latency evaluations.
 10. ✅ Add experiment tracking and controlled A/B testing.
 11. ✅ Build the analyst-facing application.
-12. Add observability, container deployment, Terraform, and AWS infrastructure.
-13. Publish a reproducible benchmark, architecture case study, and live demonstration.
+12. ✅ Add production observability and hardened container deployment.
+13. Add Terraform-managed AWS infrastructure and deployment automation.
+14. Publish a reproducible benchmark, architecture case study, and live demonstration.
 
 ## Responsible use
 

@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { isAllowedApiPath, resolveBackendUrl } from "@/lib/proxy";
+import {
+  backendRequestHeaders,
+  isAllowedApiPath,
+  resolveBackendUrl,
+} from "@/lib/proxy";
 
 afterEach(() => {
   delete process.env.FINSIGHT_API_BASE_URL;
+  delete process.env.FINSIGHT_API_AUTH_TOKEN;
 });
 
 describe("analyst API proxy policy", () => {
@@ -27,6 +32,18 @@ describe("analyst API proxy policy", () => {
     expect(resolveBackendUrl("health").toString()).toBe(
       "https://api.internal.example/base/health",
     );
+  });
+
+  it("keeps the deployment token on the server-side backend request", () => {
+    process.env.FINSIGHT_API_AUTH_TOKEN = "opaque-deployment-token";
+
+    expect(backendRequestHeaders("GET")).toEqual({
+      Authorization: "Bearer opaque-deployment-token",
+    });
+    expect(backendRequestHeaders("POST")).toEqual({
+      "Content-Type": "application/json",
+      Authorization: "Bearer opaque-deployment-token",
+    });
   });
 
   it("rejects non-http backends and paths", () => {

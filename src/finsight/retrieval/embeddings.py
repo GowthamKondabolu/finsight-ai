@@ -9,6 +9,7 @@ from typing import Protocol, Self
 from openai import AsyncOpenAI
 
 from finsight.config.settings import Settings
+from finsight.observability import operation_span
 
 
 class EmbeddingContractError(RuntimeError):
@@ -102,12 +103,25 @@ class OpenAIEmbeddingProvider:
         if any(not text.strip() for text in texts):
             raise ValueError("embedding inputs cannot be blank")
 
-        response = await self._client.embeddings.create(
-            input=list(texts),
-            model=self._model_name,
-            dimensions=self._dimensions,
-            encoding_format="float",
-        )
+        with operation_span(
+            "embeddings openai",
+            {
+                "gen_ai.operation.name": "embeddings",
+                "gen_ai.provider.name": "openai",
+                "gen_ai.request.model": self._model_name,
+                "finsight.embedding.input_count": len(texts),
+            },
+        ) as span:
+            response = await self._client.embeddings.create(
+                input=list(texts),
+                model=self._model_name,
+                dimensions=self._dimensions,
+                encoding_format="float",
+            )
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "prompt_tokens", None)
+            if isinstance(input_tokens, int):
+                span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         ordered = sorted(response.data, key=lambda item: item.index)
 
         if [item.index for item in ordered] != list(range(len(texts))):

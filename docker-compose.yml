@@ -22,5 +22,82 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  migrate:
+    image: finsight-api:local
+    build:
+      context: .
+      target: runtime
+    command: ["alembic", "upgrade", "head"]
+    environment: &api-environment
+      FINSIGHT_ENVIRONMENT: ${FINSIGHT_ENVIRONMENT:-local}
+      FINSIGHT_LOG_LEVEL: ${FINSIGHT_LOG_LEVEL:-INFO}
+      FINSIGHT_LOG_JSON: ${FINSIGHT_LOG_JSON:-true}
+      FINSIGHT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finsight}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-finsight}
+      FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET: ${FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET:?Set FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET in .env}
+      FINSIGHT_API_AUTH_TOKEN: ${FINSIGHT_API_AUTH_TOKEN:-}
+      FINSIGHT_OPENAI_API_KEY: ${FINSIGHT_OPENAI_API_KEY:-}
+      FINSIGHT_SEC_USER_AGENT: ${FINSIGHT_SEC_USER_AGENT:-FinSightAI/0.1 contact@example.com}
+      FINSIGHT_OBSERVABILITY_ENABLED: ${FINSIGHT_OBSERVABILITY_ENABLED:-true}
+      FINSIGHT_OTEL_SERVICE_NAME: ${FINSIGHT_OTEL_SERVICE_NAME:-finsight-api}
+      FINSIGHT_OTEL_TRACE_SAMPLE_RATIO: ${FINSIGHT_OTEL_TRACE_SAMPLE_RATIO:-1.0}
+      FINSIGHT_OTEL_TRACES_ENDPOINT: ${FINSIGHT_OTEL_TRACES_ENDPOINT:-}
+      FINSIGHT_OTEL_METRICS_ENDPOINT: ${FINSIGHT_OTEL_METRICS_ENDPOINT:-}
+      FINSIGHT_OTEL_EXPORT_HEADERS: ${FINSIGHT_OTEL_EXPORT_HEADERS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["application"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  api:
+    image: finsight-api:local
+    build:
+      context: .
+      target: runtime
+    environment: *api-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["application"]
+    ports:
+      - "${FINSIGHT_API_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  web:
+    image: finsight-web:local
+    build:
+      context: ./apps/web
+      target: runtime
+    environment:
+      FINSIGHT_API_BASE_URL: http://api:8000
+      FINSIGHT_API_AUTH_TOKEN: ${FINSIGHT_API_AUTH_TOKEN:-}
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["application"]
+    ports:
+      - "${FINSIGHT_WEB_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 volumes:
   finsight_postgres_data:

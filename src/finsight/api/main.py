@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from uuid import UUID
 
@@ -25,6 +27,7 @@ from finsight.agents.workflow import (
     WorkflowStateConflictError,
     postgres_investigation_workflow,
 )
+from finsight.api.middleware import ApiAuthorizationMiddleware
 from finsight.api.schemas import (
     ExperimentAssignmentRequest,
     ExperimentAssignmentResponse,
@@ -40,6 +43,7 @@ from finsight.api.schemas import (
     InvestigationFeedbackResponse,
     InvestigationWorkflowResponse,
     InvestigationWorkflowStartRequest,
+    ReadinessResponse,
     RetrievalResultResponse,
     RetrievalSearchRequest,
     RetrievalSearchResponse,
@@ -58,6 +62,12 @@ from finsight.experiments.repositories import (
     assign_experiment_variant,
     record_experiment_event,
 )
+from finsight.observability.middleware import RequestObservabilityMiddleware
+from finsight.observability.runtime import (
+    ObservabilityRuntime,
+    create_observability_runtime,
+    operation_span,
+)
 from finsight.retrieval.embeddings import OpenAIEmbeddingProvider
 from finsight.retrieval.search import (
     HybridSearchResult,
@@ -65,6 +75,7 @@ from finsight.retrieval.search import (
     hybrid_search,
 )
 from finsight.storage.database import (
+    check_database_connection,
     create_database_engine,
     create_session_factory,
     session_scope,
@@ -83,6 +94,18 @@ FeedbackHandler = Callable[
 ExperimentAssignmentHandler = Callable[[str, str], Awaitable[AssignmentResult]]
 ExperimentEventHandler = Callable[[str, ExperimentEventInput], Awaitable[ExperimentEventResult]]
 ExperimentAnalysisHandler = Callable[[str], Awaitable[ExperimentAnalysisReport]]
+ReadinessHandler = Callable[[], Awaitable[None]]
+
+
+async def run_readiness_check(*, settings: Settings) -> None:
+    """Verify PostgreSQL within a bounded readiness budget."""
+
+    engine = create_database_engine(settings)
+    try:
+        async with asyncio.timeout(settings.readiness_timeout_seconds):
+            await check_database_connection(engine)
+    finally:
+        await engine.dispose()
 
 
 async def run_retrieval_query(
@@ -96,15 +119,22 @@ async def run_retrieval_query(
     engine = create_database_engine(settings)
     session_factory = create_session_factory(engine)
 
-    try:
-        async with provider:
-            return await hybrid_search(
-                query=query,
-                provider=provider,
-                session_factory=session_factory,
-            )
-    finally:
-        await engine.dispose()
+    with operation_span(
+        "finsight.retrieval.search",
+        {
+            "finsight.retrieval.top_k": query.top_k,
+            "finsight.retrieval.candidate_k": query.candidate_k,
+        },
+    ):
+        try:
+            async with provider:
+                return await hybrid_search(
+                    query=query,
+                    provider=provider,
+                    session_factory=session_factory,
+                )
+        finally:
+            await engine.dispose()
 
 
 async def run_investigation_query(
@@ -119,16 +149,23 @@ async def run_investigation_query(
     engine = create_database_engine(settings)
     session_factory = create_session_factory(engine)
 
-    try:
-        async with embedding_provider, answer_generator:
-            return await answer_investigation(
-                query=query,
-                embedding_provider=embedding_provider,
-                answer_generator=answer_generator,
-                session_factory=session_factory,
-            )
-    finally:
-        await engine.dispose()
+    with operation_span(
+        "finsight.investigation.answer",
+        {
+            "finsight.retrieval.top_k": query.top_k,
+            "finsight.retrieval.candidate_k": query.candidate_k,
+        },
+    ):
+        try:
+            async with embedding_provider, answer_generator:
+                return await answer_investigation(
+                    query=query,
+                    embedding_provider=embedding_provider,
+                    answer_generator=answer_generator,
+                    session_factory=session_factory,
+                )
+        finally:
+            await engine.dispose()
 
 
 async def run_workflow_start(
@@ -152,18 +189,19 @@ async def run_workflow_start(
             session_factory=session_factory,
         )
 
-    try:
-        async with (
-            embedding_provider,
-            answer_generator,
-            postgres_investigation_workflow(
-                settings=settings,
-                executor=execute,
-            ) as workflow,
-        ):
-            return await workflow.start(thread_id=thread_id, query=query)
-    finally:
-        await engine.dispose()
+    with operation_span("finsight.workflow.start"):
+        try:
+            async with (
+                embedding_provider,
+                answer_generator,
+                postgres_investigation_workflow(
+                    settings=settings,
+                    executor=execute,
+                ) as workflow,
+            ):
+                return await workflow.start(thread_id=thread_id, query=query)
+        finally:
+            await engine.dispose()
 
 
 async def run_workflow_review(
@@ -177,11 +215,12 @@ async def run_workflow_review(
     async def unexpected_execution(_: InvestigationQuery) -> GroundedAnswerResult:
         raise WorkflowStateConflictError("review resume attempted to restart investigation")
 
-    async with postgres_investigation_workflow(
-        settings=settings,
-        executor=unexpected_execution,
-    ) as workflow:
-        return await workflow.resume(thread_id=thread_id, decision=decision)
+    with operation_span("finsight.workflow.review"):
+        async with postgres_investigation_workflow(
+            settings=settings,
+            executor=unexpected_execution,
+        ) as workflow:
+            return await workflow.resume(thread_id=thread_id, decision=decision)
 
 
 async def run_workflow_get(
@@ -194,11 +233,12 @@ async def run_workflow_get(
     async def unexpected_execution(_: InvestigationQuery) -> GroundedAnswerResult:
         raise WorkflowStateConflictError("workflow lookup attempted to restart investigation")
 
-    async with postgres_investigation_workflow(
-        settings=settings,
-        executor=unexpected_execution,
-    ) as workflow:
-        return await workflow.get(thread_id=thread_id)
+    with operation_span("finsight.workflow.get"):
+        async with postgres_investigation_workflow(
+            settings=settings,
+            executor=unexpected_execution,
+        ) as workflow:
+            return await workflow.get(thread_id=thread_id)
 
 
 async def run_feedback(
@@ -339,16 +379,38 @@ def create_app(
     experiment_assignment_handler: ExperimentAssignmentHandler | None = None,
     experiment_event_handler: ExperimentEventHandler | None = None,
     experiment_analysis_handler: ExperimentAnalysisHandler | None = None,
+    readiness_handler: ReadinessHandler | None = None,
+    observability_runtime: ObservabilityRuntime | None = None,
 ) -> FastAPI:
     """Create an application using explicit or environment-based settings."""
 
     resolved_settings = settings or get_settings()
+    runtime = observability_runtime or create_observability_runtime(resolved_settings)
+    owns_runtime = observability_runtime is None
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        if owns_runtime:
+            runtime.shutdown()
 
     application = FastAPI(
         title=resolved_settings.app_name,
         version=__version__,
         description="Agentic financial risk intelligence over public SEC filings.",
+        lifespan=lifespan,
+        docs_url=None if resolved_settings.environment == "production" else "/docs",
+        redoc_url=None if resolved_settings.environment == "production" else "/redoc",
+        openapi_url=(None if resolved_settings.environment == "production" else "/openapi.json"),
     )
+    application.state.observability = runtime
+    auth_token = (
+        resolved_settings.api_auth_token.get_secret_value()
+        if resolved_settings.api_auth_token is not None
+        else None
+    )
+    application.add_middleware(ApiAuthorizationMiddleware, token=auth_token)
+    application.add_middleware(RequestObservabilityMiddleware, runtime=runtime)
 
     @application.get(
         "/health",
@@ -362,6 +424,31 @@ def create_app(
             service=resolved_settings.app_name,
             version=__version__,
             environment=resolved_settings.environment,
+        )
+
+    @application.get(
+        "/ready",
+        response_model=ReadinessResponse,
+        tags=["operations"],
+    )
+    async def readiness() -> ReadinessResponse:
+        """Return ready only when the required PostgreSQL dependency responds."""
+
+        try:
+            if readiness_handler is not None:
+                await readiness_handler()
+            else:
+                await run_readiness_check(settings=resolved_settings)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="service dependencies are unavailable",
+            ) from exc
+        return ReadinessResponse(
+            service=resolved_settings.app_name,
+            version=__version__,
+            environment=resolved_settings.environment,
+            checks={"database": "ok"},
         )
 
     @application.post(

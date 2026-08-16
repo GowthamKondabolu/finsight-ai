@@ -30,7 +30,7 @@ flowchart LR
     H --> F["Idempotent analyst feedback"]
 ```
 
-The browser never receives provider keys, database credentials, or the backend base URL. Next.js resolves `FINSIGHT_API_BASE_URL` only on the server and forwards only these route shapes:
+The browser never receives provider keys, database credentials, the API bearer token, or the backend base URL. Next.js resolves `FINSIGHT_API_BASE_URL` and `FINSIGHT_API_AUTH_TOKEN` only on the server and forwards only these route shapes:
 
 - `GET /health`
 - `POST /v1/investigations/runs`
@@ -38,7 +38,7 @@ The browser never receives provider keys, database credentials, or the backend b
 - `POST /v1/investigations/runs/{thread_id}/review`
 - `POST /v1/investigations/runs/{thread_id}/feedback`
 
-The proxy rejects other paths, non-HTTP backend schemes, unsupported methods, and requests exceeding its bounded timeout. It returns JSON and does not forward browser cookies or arbitrary headers to FastAPI.
+The proxy rejects other paths, non-HTTP backend schemes, unsupported methods, and requests exceeding its bounded timeout. It supplies the deployment bearer token only on the server-to-server hop, returns JSON, and does not forward browser cookies or arbitrary headers to FastAPI.
 
 ## Run locally
 
