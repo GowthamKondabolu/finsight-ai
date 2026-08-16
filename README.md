@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Production observability and container runtime**
+**Current milestone: Terraform-managed AWS deployment architecture**
 
 Implemented:
 
@@ -79,6 +79,15 @@ Implemented:
 - Multi-stage, non-root, read-only API and Next.js container images
 - Docker Compose application profile with migration-before-start ordering
 - Container build and critical-vulnerability scanning in CI
+- Terraform bootstrap for encrypted, versioned S3 state with native lockfiles
+- Immutable GitHub OIDC trust for short-lived staging deployment credentials
+- Two-AZ VPC with public load-balancer, private application, and isolated database tiers
+- Private ECS Fargate API and web services with Cloud Map service discovery
+- Encrypted RDS PostgreSQL, managed master credentials, backups, and database alarms
+- Immutable ECR repositories, one-shot migrations, circuit-breaker rollbacks, and CPU autoscaling
+- Secrets Manager delivery that keeps application values outside Terraform state
+- Manual plan-first GitHub Environment deployment with an explicit confirmation gate
+- No-credential Terraform formatting, validation, and critical-misconfiguration scanning in CI
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -87,7 +96,7 @@ Implemented:
 
 Planned next:
 
-- Terraform-managed AWS infrastructure and deployment automation
+- Reproducible benchmark publication, architecture case study, and approved live demonstration
 
 ## Problem
 
@@ -117,9 +126,11 @@ flowchart TD
     J --> K["Offline and online evaluation"]
     I --> L["Analyst interface"]
     I --> M["OTLP traces, metrics, and structured logs"]
+    L --> N["TLS ALB and private AWS Fargate"]
+    N --> O["Encrypted RDS PostgreSQL"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, controlled experimentation, the analyst workspace, production telemetry, and hardened container builds are implemented and tested. Terraform-managed AWS deployment remains planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, controlled experimentation, the analyst workspace, production telemetry, hardened containers, and a Terraform-managed AWS staging architecture are implemented and tested. The infrastructure is reviewable deployment code; this repository does not claim that an AWS environment is currently live.
 
 ## Technology direction
 
@@ -506,7 +517,7 @@ Open http://127.0.0.1:3000. Stop the services without deleting PostgreSQL data:
 docker compose --profile application down
 ```
 
-See [Container deployment](docs/container_deployment.md), [Production observability](docs/observability.md), and the [Operations runbook](docs/operations_runbook.md).
+See [AWS deployment architecture](docs/aws_deployment.md), [Terraform operations](infrastructure/terraform/README.md), [Container deployment](docs/container_deployment.md), [Production observability](docs/observability.md), and the [Operations runbook](docs/operations_runbook.md).
 
 ### Run the analyst workspace
 
@@ -543,6 +554,7 @@ npm --prefix apps/web run lint
 npm --prefix apps/web run typecheck
 npm --prefix apps/web test
 npm --prefix apps/web run build
+terraform fmt -check -recursive infrastructure/terraform
 git diff --check
 ```
 
@@ -584,7 +596,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 10. ✅ Add experiment tracking and controlled A/B testing.
 11. ✅ Build the analyst-facing application.
 12. ✅ Add production observability and hardened container deployment.
-13. Add Terraform-managed AWS infrastructure and deployment automation.
+13. ✅ Add Terraform-managed AWS infrastructure and deployment automation.
 14. Publish a reproducible benchmark, architecture case study, and live demonstration.
 
 ## Responsible use
