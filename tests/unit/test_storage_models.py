@@ -2,6 +2,7 @@
 
 from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 
 from finsight.storage.base import NAMING_CONVENTION, Base
 from finsight.storage.models import EMBEDDING_DIMENSIONS
@@ -73,6 +74,7 @@ def test_sections_and_chunks_enforce_ordered_nonnegative_content() -> None:
 
     assert section_foreign_key.ondelete == "CASCADE"
     assert chunk_foreign_key.ondelete == "CASCADE"
+    assert isinstance(sections.c.source_metadata.type, JSONB)
 
 
 def test_chunk_schema_supports_keyword_and_vector_retrieval() -> None:

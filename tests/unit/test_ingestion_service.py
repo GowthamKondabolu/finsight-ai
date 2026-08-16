@@ -14,9 +14,10 @@ from finsight.ingestion.sec_schemas import SecCompanySubmissions
 from finsight.ingestion.service import ingest_company_filings
 from finsight.storage.database import SessionFactory
 from finsight.storage.models import Company, Filing
-from finsight.storage.repositories import StoredFiling
+from finsight.storage.repositories import StoredFiling, StoredFilingContent
 
 COMPANY_ID = UUID("11111111-1111-4111-8111-111111111111")
+FILING_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 
 def sample_submissions() -> SecCompanySubmissions:
@@ -72,6 +73,7 @@ def stored_filing(*, created: bool) -> StoredFiling:
     """Return a representative repository result."""
 
     filing = Filing(
+        id=FILING_ID,
         company_id=COMPANY_ID,
         accession_number="0000320193-24-000123",
         form_type="10-K",
@@ -125,6 +127,7 @@ async def test_ingestion_filters_skips_downloads_and_persists_new_filings(
     existing_mock = AsyncMock(return_value={"0000320193-24-000124"})
     upsert_mock = AsyncMock(return_value=company_model())
     store_mock = AsyncMock(return_value=stored_filing(created=True))
+    content_store_mock = AsyncMock(return_value=StoredFilingContent(section_count=1, chunk_count=1))
     monkeypatch.setattr(
         service_module,
         "find_existing_accession_numbers",
@@ -132,6 +135,7 @@ async def test_ingestion_filters_skips_downloads_and_persists_new_filings(
     )
     monkeypatch.setattr(service_module, "upsert_company", upsert_mock)
     monkeypatch.setattr(service_module, "store_filing", store_mock)
+    monkeypatch.setattr(service_module, "store_filing_content", content_store_mock)
 
     result = await ingest_company_filings(
         client=client,
@@ -147,6 +151,8 @@ async def test_ingestion_filters_skips_downloads_and_persists_new_filings(
     assert result.selected_filings == 2
     assert result.downloaded_filings == 1
     assert result.created_filings == 1
+    assert result.created_sections == 1
+    assert result.created_chunks == 1
     assert result.skipped_existing_filings == 1
     assert result.selected_forms == ("10-K", "8-K")
     assert factory.call_count == 2
@@ -155,6 +161,7 @@ async def test_ingestion_filters_skips_downloads_and_persists_new_filings(
     existing_mock.assert_awaited_once()
     upsert_mock.assert_awaited_once()
     store_mock.assert_awaited_once()
+    content_store_mock.assert_awaited_once()
 
     assert store_mock.await_args is not None
     filing_command = store_mock.await_args.args[1]
@@ -164,7 +171,19 @@ async def test_ingestion_filters_skips_downloads_and_persists_new_filings(
         "provider": "sec-edgar",
         "content_type": "text/html",
         "content_length": 26,
+        "parser_version": "sec-html-v1",
+        "tokenizer_name": "cl100k_base",
+        "section_count": 1,
+        "chunk_count": 1,
     }
+    assert content_store_mock.await_args is not None
+    assert content_store_mock.await_args.args[1] == FILING_ID
+    section_commands = content_store_mock.await_args.args[2]
+    assert len(section_commands) == 1
+    assert section_commands[0].section_name == "Document"
+    assert section_commands[0].content == "annual filing"
+    assert len(section_commands[0].chunks) == 1
+    assert section_commands[0].chunks[0].source_metadata["token_start"] == 0
     write_session.commit.assert_awaited_once()
 
 
@@ -201,6 +220,8 @@ async def test_ingestion_handles_no_matching_filings(
     assert result.selected_filings == 0
     assert result.downloaded_filings == 0
     assert result.created_filings == 0
+    assert result.created_sections == 0
+    assert result.created_chunks == 0
     assert result.skipped_existing_filings == 0
     assert factory.call_count == 1
     existing_mock.assert_not_awaited()
@@ -257,6 +278,8 @@ async def test_ingestion_counts_concurrent_duplicate_as_existing(
     assert result.selected_filings == 1
     assert result.downloaded_filings == 1
     assert result.created_filings == 0
+    assert result.created_sections == 0
+    assert result.created_chunks == 0
     assert result.skipped_existing_filings == 1
 
 

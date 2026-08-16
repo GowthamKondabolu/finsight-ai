@@ -147,6 +147,12 @@ class FilingSection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
 
     filing: Mapped[Filing] = relationship(back_populates="sections")
     chunks: Mapped[list[FilingChunk]] = relationship(

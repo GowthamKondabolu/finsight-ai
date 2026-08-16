@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: SEC EDGAR ingestion and persistence**
+**Current milestone: Deterministic SEC document processing**
 
 Implemented:
 
@@ -25,14 +25,16 @@ Implemented:
 - Typed SEC response validation and normalized CIK handling
 - SHA-256 document integrity and source-provenance metadata
 - Transaction-aware, idempotent company and filing persistence
+- Bounded SEC HTML parsing with script and style removal
+- Deterministic section extraction for SEC item headings, narrative text, and tables
+- `cl100k_base` token-aware chunking with stable overlap and content hashes
+- Persisted parser, tokenizer, section, chunk, and token-offset provenance
 - `finsight ingest-sec` command-line workflow
 - Mocked HTTP unit tests and real PostgreSQL integration tests
 - CI validation for formatting, typing, tests, migrations, coverage, dependencies, and Docker Compose
 
 Planned next:
 
-- Metadata-aware HTML parsing and deterministic section extraction
-- Retrieval-oriented chunking and token accounting
 - SEC company-facts ingestion and numerical normalization
 - Embedding generation and pgvector persistence
 - Hybrid semantic and keyword retrieval
@@ -70,7 +72,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-The validated SEC ingestion and PostgreSQL persistence stages are implemented and integration-tested. Document parsing, retrieval, agent orchestration, validation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, and PostgreSQL persistence are implemented and integration-tested. Retrieval, agent orchestration, validation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -208,9 +210,9 @@ finsight ingest-sec \
   --limit 5
 ```
 
-The command reports discovered, selected, downloaded, created, and skipped filings as JSON. Repeated executions avoid downloading and inserting accession numbers that already exist.
+The command reports discovered, selected, downloaded, created, and skipped filings plus persisted section and chunk counts as JSON. Repeated executions avoid downloading, parsing, and inserting accession numbers that already exist.
 
-The current milestone retrieves submissions metadata and primary filing documents, verifies downloaded content with SHA-256, and persists filing provenance. Metadata-aware HTML parsing and section extraction are the next pipeline stage.
+Each newly downloaded filing is parsed into ordered, source-preserving sections and overlapping token windows before the transaction is committed. Parser version, tokenizer, document hash, section sequence, and token offsets remain attached to the stored records so later retrieval results can be traced to deterministic inputs. See [SEC document processing](docs/document_processing.md) for the design and limits.
 
 #### Verified live-ingestion smoke test
 
@@ -279,7 +281,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 1. ✅ Establish the typed API, configuration, testing, security, and CI foundation.
 2. ✅ Add PostgreSQL, pgvector, async SQLAlchemy, Alembic migrations, and persistence repositories.
 3. ✅ Build policy-compliant SEC submissions and primary filing-document ingestion with an idempotent CLI workflow.
-4. Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
+4. ✅ Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
 5. Add SEC company-facts ingestion and normalized financial metrics.
 6. Add embeddings, hybrid retrieval, metadata filtering, and reranking.
 7. Build citation-grounded answer generation and numerical validation.
