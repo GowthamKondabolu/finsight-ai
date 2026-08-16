@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Controlled experimentation and A/B telemetry**
+**Current milestone: Analyst-facing investigation workspace**
 
 Implemented:
 
@@ -64,6 +64,12 @@ Implemented:
 - Two-proportion power planning and enforced per-arm sample commitments
 - No-peeking analysis with confidence intervals, practical effects, and guardrails
 - Assignment, event, and analysis APIs plus experiment lifecycle CLI commands
+- Next.js 16 analyst workspace for filing Q&A, period-risk comparison, and fact verification
+- Evidence-first answer rendering with claim-to-source citations and numerical checks
+- Durable workflow restoration, explicit approve-or-reject review, and post-review feedback
+- Same-origin, allowlisted API proxy that exposes only health and investigation routes
+- Clearly labelled interface fixture that never invokes a model or claims live evidence
+- Frontend linting, strict TypeScript validation, component tests, and production builds in CI
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -72,7 +78,7 @@ Implemented:
 
 Planned next:
 
-- Analyst-facing application and AWS deployment
+- Observability, container deployment, Terraform, and AWS infrastructure
 
 ## Problem
 
@@ -103,7 +109,7 @@ flowchart TD
     I --> L["Analyst interface"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, and controlled experimentation are implemented and tested. Analyst delivery and cloud operations remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, controlled experimentation, and the analyst workspace are implemented and tested. Cloud operations remain planned.
 
 ## Technology direction
 
@@ -121,6 +127,7 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Tool integration | Model Context Protocol Python SDK v2 |
 | Evaluation | Retrieval, faithfulness, citation, numerical and latency metrics |
 | Experimentation | Preregistered offline comparisons, deterministic A/B assignment, PostgreSQL telemetry, and guardrail-aware analysis |
+| Analyst application | Next.js 16, React 19, strict TypeScript, same-origin FastAPI proxy |
 | Observability | Structured logs, traces, metrics and evaluation telemetry |
 | Local infrastructure | Docker Compose |
 | Cloud target | AWS with infrastructure as code |
@@ -168,7 +175,7 @@ finsight-ai/
 - Python 3.12
 - Docker Desktop with Docker Compose
 - Git
-- Node.js 24 will be used when the web application is introduced
+- Node.js 24
 
 ### Install the project
 
@@ -455,6 +462,30 @@ Open:
 - API health check: http://127.0.0.1:8000/health
 - Interactive API documentation: http://127.0.0.1:8000/docs
 
+### Run the analyst workspace
+
+Keep the API running, then install and start the web application in a second terminal:
+
+```bash
+npm ci --prefix apps/web
+npm --prefix apps/web run dev
+```
+
+Open http://127.0.0.1:3000. The browser calls only the same-origin `/api/finsight` proxy; the server-side proxy forwards a small allowlist of health and investigation routes to `FINSIGHT_API_BASE_URL`.
+
+Use **Explore interface fixture** to inspect the complete review experience without a configured model or ingested database. The fixture is visibly labelled and never makes an API or model call. Live investigations require PostgreSQL migrations, ingested and embedded SEC evidence, an OpenAI API key, and the FastAPI service.
+
+The workspace supports:
+
+- filing Q&A, risk-comparison, and exact-fact investigation modes;
+- CIK, form, filing-period, section, and fact-concept filters;
+- durable thread restoration after refresh or handoff;
+- claim-level citations, filing provenance, numerical validation, and limitations;
+- an attributable human approve-or-reject release gate; and
+- bounded, idempotent post-review quality feedback.
+
+See [Analyst-facing investigation workspace](docs/analyst_app.md) for architecture, trust boundaries, and live setup.
+
 ## Quality checks
 
 ```bash
@@ -462,6 +493,10 @@ ruff format --check .
 ruff check .
 mypy src tests
 pytest
+npm --prefix apps/web run lint
+npm --prefix apps/web run typecheck
+npm --prefix apps/web test
+npm --prefix apps/web run build
 git diff --check
 ```
 
@@ -501,7 +536,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 8. ✅ Add LangGraph orchestration, MCP tools, and human approval states.
 9. ✅ Create retrieval, faithfulness, citation, safety, and latency evaluations.
 10. ✅ Add experiment tracking and controlled A/B testing.
-11. Build the analyst-facing application.
+11. ✅ Build the analyst-facing application.
 12. Add observability, container deployment, Terraform, and AWS infrastructure.
 13. Publish a reproducible benchmark, architecture case study, and live demonstration.
 

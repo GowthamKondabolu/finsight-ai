@@ -162,6 +162,34 @@ async def test_workflow_rejects_unknown_thread() -> None:
         await workflow.resume(thread_id=THREAD_ID, decision=decision)
 
 
+@pytest.mark.asyncio
+async def test_workflow_get_restores_state_without_execution() -> None:
+    """Analysts should be able to restore a checkpoint without rerunning the model."""
+
+    executor = AsyncMock(return_value=answer_result())
+    workflow = InvestigationWorkflow(executor=executor, checkpointer=InMemorySaver())
+    query = InvestigationQuery(question="What changed?")
+    started = await workflow.start(thread_id=THREAD_ID, query=query)
+
+    restored = await workflow.get(thread_id=THREAD_ID)
+
+    assert restored == started
+    executor.assert_awaited_once_with(query)
+
+
+@pytest.mark.asyncio
+async def test_workflow_get_rejects_unknown_thread() -> None:
+    """A lookup must not create an empty workflow implicitly."""
+
+    workflow = InvestigationWorkflow(
+        executor=AsyncMock(return_value=answer_result()),
+        checkpointer=InMemorySaver(),
+    )
+
+    with pytest.raises(WorkflowNotFoundError, match="not found"):
+        await workflow.get(thread_id=THREAD_ID)
+
+
 @pytest.mark.parametrize(
     "values",
     [

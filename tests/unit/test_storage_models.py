@@ -17,6 +17,7 @@ def test_metadata_registers_expected_tables_and_shared_columns() -> None:
         "experiment_events",
         "experiment_variants",
         "experiments",
+        "investigation_feedback",
         "financial_facts",
         "filings",
         "filing_sections",
@@ -181,3 +182,24 @@ def test_experiment_schema_preserves_plan_assignment_and_event_identity() -> Non
     assert variant_foreign_key.ondelete == "CASCADE"
     assert assignment_foreign_key.ondelete == "CASCADE"
     assert event_foreign_key.ondelete == "CASCADE"
+
+
+def test_feedback_schema_bounds_quality_and_idempotency() -> None:
+    """Analyst feedback should be bounded and idempotent per workflow thread."""
+
+    feedback = Base.metadata.tables["investigation_feedback"]
+    checks = {
+        constraint.name
+        for constraint in feedback.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    uniques = {
+        constraint.name
+        for constraint in feedback.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert "ck_investigation_feedback_rating" in checks
+    assert "ck_investigation_feedback_evidence_quality" in checks
+    assert "uq_investigation_feedback_thread_key" in uniques
+    assert isinstance(feedback.c.tags.type, JSONB)

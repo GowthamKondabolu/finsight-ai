@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -203,6 +204,39 @@ class ExperimentEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     assignment: Mapped[ExperimentAssignment] = relationship(back_populates="events")
+
+
+class InvestigationFeedback(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Idempotent analyst feedback attached to a durable investigation thread."""
+
+    __tablename__ = "investigation_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "thread_id",
+            "feedback_key",
+            name="uq_investigation_feedback_thread_key",
+        ),
+        CheckConstraint(
+            "rating IN ('helpful', 'not_helpful')",
+            name="ck_investigation_feedback_rating",
+        ),
+        CheckConstraint(
+            "evidence_quality >= 1 AND evidence_quality <= 5",
+            name="ck_investigation_feedback_evidence_quality",
+        ),
+    )
+
+    thread_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    feedback_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    rating: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    evidence_quality: Mapped[int] = mapped_column(Integer, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):

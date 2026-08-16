@@ -225,6 +225,14 @@ class InvestigationWorkflow:
         await self._graph.ainvoke(command, config)
         return await self._result(thread_id)
 
+    async def get(self, *, thread_id: UUID) -> InvestigationWorkflowResult:
+        """Return one persisted workflow without changing its state."""
+
+        snapshot = await self._graph.aget_state(self._config(thread_id))
+        if not snapshot.values:
+            raise WorkflowNotFoundError("workflow thread was not found")
+        return await self._result(thread_id)
+
     async def _result(self, thread_id: UUID) -> InvestigationWorkflowResult:
         """Validate persisted graph values before crossing the service boundary."""
 

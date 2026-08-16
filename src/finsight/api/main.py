@@ -10,6 +10,12 @@ from fastapi import FastAPI, HTTPException, status
 
 from finsight import __version__
 from finsight.agents.contracts import GroundedAnswerResult, InvestigationQuery
+from finsight.agents.feedback import (
+    InvestigationFeedbackConflictError,
+    InvestigationFeedbackInput,
+    InvestigationFeedbackResult,
+    record_investigation_feedback,
+)
 from finsight.agents.generation import AnswerGenerationError, OpenAIAnswerGenerator
 from finsight.agents.investigation import GroundedAnswerContractError, answer_investigation
 from finsight.agents.workflow import (
@@ -30,6 +36,8 @@ from finsight.api.schemas import (
     HumanReviewRequestResponse,
     InvestigationAnswerRequest,
     InvestigationAnswerResponse,
+    InvestigationFeedbackRequest,
+    InvestigationFeedbackResponse,
     InvestigationWorkflowResponse,
     InvestigationWorkflowStartRequest,
     RetrievalResultResponse,
@@ -67,6 +75,10 @@ InvestigationHandler = Callable[[InvestigationQuery], Awaitable[GroundedAnswerRe
 WorkflowStartHandler = Callable[[UUID, InvestigationQuery], Awaitable[InvestigationWorkflowResult]]
 WorkflowReviewHandler = Callable[
     [UUID, HumanReviewDecision], Awaitable[InvestigationWorkflowResult]
+]
+WorkflowGetHandler = Callable[[UUID], Awaitable[InvestigationWorkflowResult]]
+FeedbackHandler = Callable[
+    [UUID, InvestigationFeedbackInput], Awaitable[InvestigationFeedbackResult]
 ]
 ExperimentAssignmentHandler = Callable[[str, str], Awaitable[AssignmentResult]]
 ExperimentEventHandler = Callable[[str, ExperimentEventInput], Awaitable[ExperimentEventResult]]
@@ -170,6 +182,48 @@ async def run_workflow_review(
         executor=unexpected_execution,
     ) as workflow:
         return await workflow.resume(thread_id=thread_id, decision=decision)
+
+
+async def run_workflow_get(
+    *,
+    settings: Settings,
+    thread_id: UUID,
+) -> InvestigationWorkflowResult:
+    """Read one persisted workflow without allocating AI provider resources."""
+
+    async def unexpected_execution(_: InvestigationQuery) -> GroundedAnswerResult:
+        raise WorkflowStateConflictError("workflow lookup attempted to restart investigation")
+
+    async with postgres_investigation_workflow(
+        settings=settings,
+        executor=unexpected_execution,
+    ) as workflow:
+        return await workflow.get(thread_id=thread_id)
+
+
+async def run_feedback(
+    *,
+    settings: Settings,
+    thread_id: UUID,
+    feedback: InvestigationFeedbackInput,
+) -> InvestigationFeedbackResult:
+    """Persist analyst feedback after confirming the review is terminal."""
+
+    workflow = await run_workflow_get(settings=settings, thread_id=thread_id)
+    if workflow.status == "pending_review":
+        raise WorkflowStateConflictError("feedback requires a completed human review")
+
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            return await record_investigation_feedback(
+                session,
+                thread_id=thread_id,
+                feedback=feedback,
+            )
+    finally:
+        await engine.dispose()
 
 
 async def run_experiment_assignment(
@@ -280,6 +334,8 @@ def create_app(
     investigation_handler: InvestigationHandler | None = None,
     workflow_start_handler: WorkflowStartHandler | None = None,
     workflow_review_handler: WorkflowReviewHandler | None = None,
+    workflow_get_handler: WorkflowGetHandler | None = None,
+    feedback_handler: FeedbackHandler | None = None,
     experiment_assignment_handler: ExperimentAssignmentHandler | None = None,
     experiment_event_handler: ExperimentEventHandler | None = None,
     experiment_analysis_handler: ExperimentAnalysisHandler | None = None,
@@ -459,6 +515,62 @@ def create_app(
                 detail=str(exc),
             ) from exc
         return _workflow_response(result)
+
+    @application.get(
+        "/v1/investigations/runs/{thread_id}",
+        response_model=InvestigationWorkflowResponse,
+        tags=["investigations"],
+    )
+    async def get_workflow(thread_id: UUID) -> InvestigationWorkflowResponse:
+        """Return a durable investigation for analyst workspace restoration."""
+
+        try:
+            result = (
+                await workflow_get_handler(thread_id)
+                if workflow_get_handler is not None
+                else await run_workflow_get(settings=resolved_settings, thread_id=thread_id)
+            )
+        except WorkflowNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        return _workflow_response(result)
+
+    @application.post(
+        "/v1/investigations/runs/{thread_id}/feedback",
+        response_model=InvestigationFeedbackResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["investigations"],
+    )
+    async def capture_feedback(
+        thread_id: UUID,
+        request: InvestigationFeedbackRequest,
+    ) -> InvestigationFeedbackResponse:
+        """Capture non-identifying feedback after a human review decision."""
+
+        feedback = InvestigationFeedbackInput.model_validate(request.model_dump())
+        try:
+            result = (
+                await feedback_handler(thread_id, feedback)
+                if feedback_handler is not None
+                else await run_feedback(
+                    settings=resolved_settings,
+                    thread_id=thread_id,
+                    feedback=feedback,
+                )
+            )
+        except WorkflowNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        except (WorkflowStateConflictError, InvestigationFeedbackConflictError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        return InvestigationFeedbackResponse.model_validate(result.model_dump())
 
     @application.post(
         "/v1/experiments/{experiment_key}/assignments",
