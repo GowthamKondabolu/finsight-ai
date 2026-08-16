@@ -45,12 +45,10 @@ jobs:
         run: |
           postgres_password="$(openssl rand -hex 24)"
           assignment_secret="$(openssl rand -hex 32)"
-          api_auth_token="$(openssl rand -hex 32)"
           {
             echo "POSTGRES_PASSWORD=${postgres_password}"
             echo "FINSIGHT_DATABASE_URL=postgresql+psycopg://finsight:${postgres_password}@localhost:5432/finsight"
             echo "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET=${assignment_secret}"
-            echo "FINSIGHT_API_AUTH_TOKEN=${api_auth_token}"
           } >> "$GITHUB_ENV"
 
       - name: Check formatting
@@ -141,6 +139,8 @@ jobs:
 
       - name: Smoke test composed API and analyst application
         run: |
+          export FINSIGHT_API_AUTH_TOKEN="$(openssl rand -hex 32)"
+          echo "::add-mask::${FINSIGHT_API_AUTH_TOKEN}"
           docker compose --profile application up -d --wait
           curl --fail --silent --show-error http://127.0.0.1:8000/health
           curl --fail --silent --show-error http://127.0.0.1:8000/ready
