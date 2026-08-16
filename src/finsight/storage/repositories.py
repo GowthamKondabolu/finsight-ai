@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -12,7 +13,15 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finsight.storage.models import Company, Filing, FilingChunk, FilingSection
+from finsight.storage.models import (
+    Company,
+    Filing,
+    FilingChunk,
+    FilingSection,
+    FinancialFact,
+)
+
+MAX_FINANCIAL_FACTS_PER_INSERT = 1_000
 
 
 class FilingPersistenceError(RuntimeError):
@@ -87,6 +96,36 @@ class StoredFilingContent:
 
     section_count: int
     chunk_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinancialFactCreate:
+    """One normalized SEC XBRL observation ready for persistence."""
+
+    observation_key: str
+    taxonomy: str
+    concept: str
+    label: str
+    description: str
+    unit: str
+    value: Decimal
+    start_date: date | None
+    end_date: date
+    filed_date: date
+    fiscal_year: int | None
+    fiscal_period: str | None
+    form_type: str
+    accession_number: str
+    frame: str | None
+    source_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFinancialFacts:
+    """Counts produced by an idempotent company-facts insert."""
+
+    created_count: int
+    existing_count: int
 
 
 async def upsert_company(
@@ -224,6 +263,58 @@ async def store_filing_content(
     return StoredFilingContent(
         section_count=len(section_models),
         chunk_count=chunk_count,
+    )
+
+
+async def store_financial_facts(
+    session: AsyncSession,
+    company_id: UUID,
+    facts: Sequence[FinancialFactCreate],
+) -> StoredFinancialFacts:
+    """Bulk-insert unseen fact observations by deterministic source identity."""
+
+    if not facts:
+        return StoredFinancialFacts(created_count=0, existing_count=0)
+
+    created_count = 0
+
+    for batch_start in range(0, len(facts), MAX_FINANCIAL_FACTS_PER_INSERT):
+        batch = facts[batch_start : batch_start + MAX_FINANCIAL_FACTS_PER_INSERT]
+        statement = (
+            insert(FinancialFact)
+            .values(
+                [
+                    {
+                        "company_id": company_id,
+                        "observation_key": fact.observation_key,
+                        "taxonomy": fact.taxonomy,
+                        "concept": fact.concept,
+                        "label": fact.label,
+                        "description": fact.description,
+                        "unit": fact.unit,
+                        "value": fact.value,
+                        "start_date": fact.start_date,
+                        "end_date": fact.end_date,
+                        "filed_date": fact.filed_date,
+                        "fiscal_year": fact.fiscal_year,
+                        "fiscal_period": fact.fiscal_period,
+                        "form_type": fact.form_type,
+                        "accession_number": fact.accession_number,
+                        "frame": fact.frame,
+                        "source_metadata": fact.source_metadata,
+                    }
+                    for fact in batch
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=[FinancialFact.observation_key])
+            .returning(FinancialFact.id)
+        )
+        result = await session.execute(statement)
+        created_count += len(result.scalars().all())
+
+    return StoredFinancialFacts(
+        created_count=created_count,
+        existing_count=len(facts) - created_count,
     )
 
 

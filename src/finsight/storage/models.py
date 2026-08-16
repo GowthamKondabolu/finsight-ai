@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -63,6 +65,63 @@ class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    financial_facts: Mapped[list[FinancialFact]] = relationship(
+        back_populates="company",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class FinancialFact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One normalized, period-specific SEC XBRL company fact."""
+
+    __tablename__ = "financial_facts"
+    __table_args__ = (
+        CheckConstraint(
+            "observation_key ~ '^[0-9a-f]{64}$'",
+            name="ck_financial_facts_observation_key_format",
+        ),
+        Index(
+            "ix_financial_facts_company_concept_period",
+            "company_id",
+            "taxonomy",
+            "concept",
+            "end_date",
+        ),
+    )
+
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    observation_key: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+    )
+    taxonomy: Mapped[str] = mapped_column(String(50), nullable=False)
+    concept: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(), nullable=False)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    filed_date: Mapped[date] = mapped_column(Date, nullable=False)
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_period: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    form_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    accession_number: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    frame: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    company: Mapped[Company] = relationship(back_populates="financial_facts")
 
 
 class Filing(UUIDPrimaryKeyMixin, TimestampMixin, Base):

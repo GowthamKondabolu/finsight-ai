@@ -14,6 +14,7 @@ import httpx
 from pydantic import ValidationError
 
 from finsight.config.settings import Settings
+from finsight.ingestion.company_facts import SecCompanyFacts
 from finsight.ingestion.sec_schemas import (
     SecCompanySubmissions,
     SecFilingMetadata,
@@ -22,6 +23,7 @@ from finsight.ingestion.sec_schemas import (
 
 SEC_DATA_BASE_URL = "https://data.sec.gov"
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
+SEC_COMPANY_FACTS_BASE_URL = f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts"
 RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 SleepFunction = Callable[[float], Awaitable[None]]
@@ -110,6 +112,30 @@ class SecEdgarClient:
             raise SecEdgarPayloadError(
                 f"SEC submissions payload failed validation for CIK {normalized_cik}"
             ) from exc
+
+    async def fetch_company_facts(
+        self,
+        cik: str | int,
+    ) -> SecCompanyFacts:
+        """Fetch and validate one company's normalized XBRL fact history."""
+
+        normalized_cik = normalize_cik(cik)
+        url = f"{SEC_COMPANY_FACTS_BASE_URL}/CIK{normalized_cik}.json"
+        payload = await self._request_json(url)
+
+        try:
+            company_facts = SecCompanyFacts.model_validate(payload)
+        except ValidationError as exc:
+            raise SecEdgarPayloadError(
+                f"SEC company-facts payload failed validation for CIK {normalized_cik}"
+            ) from exc
+
+        if company_facts.cik != normalized_cik:
+            raise SecEdgarPayloadError(
+                "SEC company-facts payload CIK does not match the requested CIK"
+            )
+
+        return company_facts
 
     async def fetch_filing_document(
         self,

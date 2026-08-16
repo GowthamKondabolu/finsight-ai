@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Deterministic SEC document processing**
+**Current milestone: SEC company facts and normalized financial observations**
 
 Implemented:
 
@@ -29,13 +29,16 @@ Implemented:
 - Deterministic section extraction for SEC item headings, narrative text, and tables
 - `cl100k_base` token-aware chunking with stable overlap and content hashes
 - Persisted parser, tokenizer, section, chunk, and token-offset provenance
+- Typed SEC company-facts ingestion for `us-gaap` and `dei` taxonomies
+- Exact decimal financial observations with deterministic source identities
+- Idempotent bulk fact persistence indexed by issuer, concept, and period
+- `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
 - Mocked HTTP unit tests and real PostgreSQL integration tests
 - CI validation for formatting, typing, tests, migrations, coverage, dependencies, and Docker Compose
 
 Planned next:
 
-- SEC company-facts ingestion and numerical normalization
 - Embedding generation and pgvector persistence
 - Hybrid semantic and keyword retrieval
 - Reranking and citation-grounded generation
@@ -72,7 +75,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, and PostgreSQL persistence are implemented and integration-tested. Retrieval, agent orchestration, validation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, and PostgreSQL persistence are implemented and integration-tested. Retrieval, agent orchestration, validation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -232,6 +235,27 @@ A live EDGAR smoke test retrieved Apple’s filing and validated repeat-run idem
 
 The latest filing and document size will change as the SEC publishes new filings.
 
+### Ingest SEC company facts
+
+Apply the latest migrations, then ingest exact normalized XBRL observations for Apple:
+
+```bash
+alembic upgrade head
+
+finsight ingest-company-facts \
+  --cik 0000320193
+```
+
+The default command selects the SEC `us-gaap` and `dei` taxonomies. Repeat `--taxonomy` to control the selection:
+
+```bash
+finsight ingest-company-facts \
+  --cik 0000320193 \
+  --taxonomy us-gaap
+```
+
+The command reports source, selected, inserted, and existing observation counts. Values are stored as exact PostgreSQL numerics rather than binary floating-point values. Each observation retains its taxonomy, concept, unit, period, filing accession, fiscal context, frame, and deterministic identity. See [SEC company-facts ingestion](docs/company_facts.md) for the normalization contract and limitations.
+
 ### Run the API
 
 ```bash
@@ -282,7 +306,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 2. ✅ Add PostgreSQL, pgvector, async SQLAlchemy, Alembic migrations, and persistence repositories.
 3. ✅ Build policy-compliant SEC submissions and primary filing-document ingestion with an idempotent CLI workflow.
 4. ✅ Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
-5. Add SEC company-facts ingestion and normalized financial metrics.
+5. ✅ Add SEC company-facts ingestion and normalized financial metrics.
 6. Add embeddings, hybrid retrieval, metadata filtering, and reranking.
 7. Build citation-grounded answer generation and numerical validation.
 8. Add LangGraph orchestration, MCP tools, and human approval states.

@@ -1,7 +1,7 @@
 """Tests for the SEC filing persistence schema."""
 
 from pgvector.sqlalchemy import VECTOR
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, Numeric, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 from finsight.storage.base import NAMING_CONVENTION, Base
@@ -13,6 +13,7 @@ def test_metadata_registers_expected_tables_and_shared_columns() -> None:
 
     expected_tables = {
         "companies",
+        "financial_facts",
         "filings",
         "filing_sections",
         "filing_chunks",
@@ -47,6 +48,42 @@ def test_company_and_filing_constraints_preserve_source_identity() -> None:
     company_foreign_key = next(iter(filings.c.company_id.foreign_keys))
     assert company_foreign_key.target_fullname == "companies.id"
     assert company_foreign_key.ondelete == "CASCADE"
+
+
+def test_financial_facts_preserve_numeric_precision_and_source_identity() -> None:
+    """Normalized XBRL facts should be exact, unique, and issuer-scoped."""
+
+    facts = Base.metadata.tables["financial_facts"]
+    fact_checks = {
+        constraint.name
+        for constraint in facts.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    value_type = facts.c.value.type
+
+    assert facts.c.observation_key.unique is True
+    assert isinstance(value_type, Numeric)
+    assert value_type.asdecimal is True
+    assert value_type.precision is None
+    assert value_type.scale is None
+    assert isinstance(facts.c.source_metadata.type, JSONB)
+    assert "ck_financial_facts_observation_key_format" in fact_checks
+
+    company_foreign_key = next(iter(facts.c.company_id.foreign_keys))
+    assert company_foreign_key.target_fullname == "companies.id"
+    assert company_foreign_key.ondelete == "CASCADE"
+
+    concept_index = next(
+        index
+        for index in facts.indexes
+        if index.name == "ix_financial_facts_company_concept_period"
+    )
+    assert [column.name for column in concept_index.columns] == [
+        "company_id",
+        "taxonomy",
+        "concept",
+        "end_date",
+    ]
 
 
 def test_sections_and_chunks_enforce_ordered_nonnegative_content() -> None:
