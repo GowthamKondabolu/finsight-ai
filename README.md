@@ -10,30 +10,38 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Engineering foundation**
+**Current milestone: SEC EDGAR ingestion and persistence**
 
 Implemented:
 
 - Typed FastAPI application with health-check endpoint
 - Environment-based configuration using Pydantic Settings
-- Strict Ruff, mypy, pytest, and coverage configuration
-- Docker Compose environment for PostgreSQL 17
-- pgvector and PostgreSQL trigram-search extensions
-- Python 3.12 project packaging and dependency groups
-- Unit tests with 100% coverage for the current application layer
+- Async SQLAlchemy runtime for PostgreSQL 17
+- Alembic-managed SEC filing storage schema
+- pgvector, PostgreSQL full-text search, and trigram-search support
+- Company, filing, section, and retrieval-ready chunk models
+- Policy-compliant SEC EDGAR submissions and filing-document client
+- Identifiable SEC user agent, configurable request pacing, bounded retries, and `Retry-After` handling
+- Typed SEC response validation and normalized CIK handling
+- SHA-256 document integrity and source-provenance metadata
+- Transaction-aware, idempotent company and filing persistence
+- `finsight ingest-sec` command-line workflow
+- Mocked HTTP unit tests and real PostgreSQL integration tests
+- CI validation for formatting, typing, tests, migrations, coverage, dependencies, and Docker Compose
 
 Planned next:
 
-- SEC EDGAR filing and company-facts ingestion
-- Metadata-aware document parsing and chunking
-- PostgreSQL and pgvector persistence
+- Metadata-aware HTML parsing and deterministic section extraction
+- Retrieval-oriented chunking and token accounting
+- SEC company-facts ingestion and numerical normalization
+- Embedding generation and pgvector persistence
 - Hybrid semantic and keyword retrieval
 - Reranking and citation-grounded generation
 - LangGraph investigation workflow
 - MCP-compatible financial-data tools
 - Numerical verification and safety guardrails
 - Retrieval and answer-quality evaluation
-- Experiment tracking and A/B testing
+- Experiment tracking and controlled A/B testing
 - Analyst-facing application and AWS deployment
 
 ## Problem
@@ -62,7 +70,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-The diagram represents the target architecture. Components will be marked as implemented only after their code and tests are committed.
+The validated SEC ingestion and PostgreSQL persistence stages are implemented and integration-tested. Document parsing, retrieval, agent orchestration, validation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -170,6 +178,58 @@ Stop the local services without deleting stored data:
 docker compose down
 ```
 
+### Ingest SEC filings
+
+SEC EDGAR public APIs do not require an API key, but automated clients must provide an identifiable user agent and respect SEC traffic policies. FinSight defaults to five requests per second, below the SEC maximum of ten requests per second. See the [SEC EDGAR API guidance](https://www.sec.gov/search-filings/edgar-application-programming-interfaces).
+
+Apply the database migration before the first ingestion:
+
+```bash
+docker compose up -d --wait postgres
+alembic upgrade head
+```
+
+Ingest the latest Apple Form 10-K:
+
+```bash
+finsight ingest-sec \
+  --cik 0000320193 \
+  --form 10-K \
+  --limit 1
+```
+
+Repeat `--form` to select multiple filing types:
+
+```bash
+finsight ingest-sec \
+  --cik 0000320193 \
+  --form 10-K \
+  --form 10-Q \
+  --limit 5
+```
+
+The command reports discovered, selected, downloaded, created, and skipped filings as JSON. Repeated executions avoid downloading and inserting accession numbers that already exist.
+
+The current milestone retrieves submissions metadata and primary filing documents, verifies downloaded content with SHA-256, and persists filing provenance. Metadata-aware HTML parsing and section extraction are the next pipeline stage.
+
+#### Verified live-ingestion smoke test
+
+A live EDGAR smoke test retrieved Apple’s filing and validated repeat-run idempotency:
+
+| Field | Verified value |
+|---|---|
+| Company | Apple Inc. |
+| CIK | `0000320193` |
+| Form | `10-K` |
+| Filing date | `2025-10-31` |
+| Accession number | `0000320193-25-000079` |
+| Content type | `text/html` |
+| Content length | 1,520,208 bytes |
+| SHA-256 length | 64 characters |
+| Repeat execution | 0 downloads, 0 inserts, 1 existing filing skipped |
+
+The latest filing and document size will change as the SEC publishes new filings.
+
 ### Run the API
 
 ```bash
@@ -186,9 +246,19 @@ Open:
 ```bash
 ruff format --check .
 ruff check .
-mypy src
+mypy src tests
 pytest
 git diff --check
+```
+
+Run the database integration suite separately:
+
+```bash
+docker compose up -d --wait postgres
+alembic upgrade head
+FINSIGHT_RUN_DATABASE_TESTS=1 pytest
+alembic check
+docker compose down
 ```
 
 The test suite enforces a minimum coverage threshold of 85%.
@@ -206,17 +276,19 @@ The test suite enforces a minimum coverage threshold of 85%.
 
 ## Roadmap
 
-1. Add database models, migrations, and repository abstractions.
-2. Build compliant SEC filing and company-facts ingestion.
-3. Implement parsing, metadata enrichment, and deterministic chunking.
-4. Add hybrid retrieval, metadata filters, and reranking.
-5. Build citation-grounded answer generation and numerical validation.
-6. Add LangGraph orchestration, MCP tools, and human approval states.
-7. Create retrieval, faithfulness, safety, and latency evaluations.
-8. Add experiment tracking and controlled A/B testing.
-9. Build the analyst-facing application.
-10. Add observability, container deployment, Terraform, and AWS infrastructure.
-11. Publish a reproducible benchmark, architecture case study, and live demonstration.
+1. ✅ Establish the typed API, configuration, testing, security, and CI foundation.
+2. ✅ Add PostgreSQL, pgvector, async SQLAlchemy, Alembic migrations, and persistence repositories.
+3. ✅ Build policy-compliant SEC submissions and primary filing-document ingestion with an idempotent CLI workflow.
+4. Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
+5. Add SEC company-facts ingestion and normalized financial metrics.
+6. Add embeddings, hybrid retrieval, metadata filtering, and reranking.
+7. Build citation-grounded answer generation and numerical validation.
+8. Add LangGraph orchestration, MCP tools, and human approval states.
+9. Create retrieval, faithfulness, citation, safety, and latency evaluations.
+10. Add experiment tracking and controlled A/B testing.
+11. Build the analyst-facing application.
+12. Add observability, container deployment, Terraform, and AWS infrastructure.
+13. Publish a reproducible benchmark, architecture case study, and live demonstration.
 
 ## Responsible use
 
