@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Hybrid retrieval and citation-ready evidence**
+**Current milestone: Citation-grounded answers and numerical validation**
 
 Implemented:
 
@@ -41,6 +41,12 @@ Implemented:
 - Transparent weighted reciprocal-rank-fusion reranking
 - Citation-complete retrieval results with channel ranks and raw scores
 - `POST /v1/retrieval/search` hybrid-search endpoint
+- Provider-independent structured answer-generation contract
+- Stateless OpenAI Responses adapter with strict Pydantic output parsing
+- Application-rendered inline citations that reject invented evidence IDs
+- Exact SEC fact context with deterministic Decimal arithmetic validation
+- Failed calculations excluded from answer text and escalated for review
+- `POST /v1/investigations/answer` grounded-answer endpoint
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -49,8 +55,6 @@ Implemented:
 
 Planned next:
 
-- Citation-grounded generation
-- Numerical validation against exact SEC company facts
 - LangGraph investigation workflow
 - MCP-compatible financial-data tools
 - Numerical verification and safety guardrails
@@ -84,7 +88,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, and hybrid retrieval are implemented and integration-tested. Answer generation, agent orchestration, validation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, and numerical validation are implemented and integration-tested. Agent orchestration, evaluation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -97,6 +101,7 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Embeddings | Provider abstraction, OpenAI `text-embedding-3-small` production adapter |
 | Keyword search | PostgreSQL full-text and trigram search |
 | Retrieval | Hybrid retrieval, metadata filtering, reranking |
+| Generation | OpenAI Responses API, strict Structured Outputs, provider abstraction |
 | Agent orchestration | LangGraph |
 | Tool integration | Model Context Protocol |
 | Evaluation | Retrieval, faithfulness, citation, numerical and latency metrics |
@@ -168,7 +173,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services. Set `FINSIGHT_OPENAI_API_KEY` only when generating production embeddings.
+Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services. Set `FINSIGHT_OPENAI_API_KEY` only when generating production embeddings or investigation answers.
 
 Do not commit `.env` or production credentials.
 
@@ -299,6 +304,27 @@ curl -X POST http://127.0.0.1:8000/v1/retrieval/search \
 
 PostgreSQL independently ranks keyword and semantic candidates under the same metadata filters. FinSight reranks their union with weighted reciprocal-rank fusion and returns the content, fused score, raw channel scores, channel ranks, filing accession, dates, section, chunk position, and SEC source URL. See [Hybrid retrieval](docs/retrieval.md) for the ranking and citation contracts.
 
+### Generate a grounded investigation answer
+
+After ingesting filings and company facts and embedding the filing chunks, request a citation-enforced answer:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/investigations/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What supply-chain risk is disclosed, and how did revenue change?",
+    "cik": "0000320193",
+    "form_types": ["10-K"],
+    "section_names": ["Item 1A. Risk Factors"],
+    "fact_concepts": ["RevenueFromContractWithCustomerExcludingAssessedTax"],
+    "top_k": 8,
+    "candidate_k": 50,
+    "fact_limit": 30
+  }'
+```
+
+The generation provider receives only bounded filing passages and exact SEC fact observations. It returns strict claim objects rather than free-form final prose. FinSight verifies every source ID, recomputes supported arithmetic with `Decimal`, omits failed calculations from the rendered answer, and always returns an explicit qualified-human-review requirement. Provider-side response storage is disabled. See [Grounded answers](docs/grounded_answers.md) for the trust boundaries and validation contract.
+
 ### Run the API
 
 ```bash
@@ -351,7 +377,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 4. ✅ Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
 5. ✅ Add SEC company-facts ingestion and normalized financial metrics.
 6. ✅ Add embeddings, hybrid retrieval, metadata filtering, and reranking.
-7. Build citation-grounded answer generation and numerical validation.
+7. ✅ Build citation-grounded answer generation and numerical validation.
 8. Add LangGraph orchestration, MCP tools, and human approval states.
 9. Create retrieval, faithfulness, citation, safety, and latency evaluations.
 10. Add experiment tracking and controlled A/B testing.

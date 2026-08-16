@@ -129,6 +129,9 @@ def test_embedding_settings_are_safe_and_schema_compatible() -> None:
     assert settings.embedding_model == "text-embedding-3-small"
     assert settings.embedding_dimensions == 1536
     assert settings.embedding_batch_size == 100
+    assert settings.generation_model == "gpt-5.6-luna"
+    assert settings.generation_max_output_tokens == 2_000
+    assert settings.generation_reasoning_effort == "low"
 
 
 def test_embedding_settings_read_secret_and_batch_overrides(
@@ -139,6 +142,9 @@ def test_embedding_settings_read_secret_and_batch_overrides(
     monkeypatch.setenv("FINSIGHT_OPENAI_API_KEY", "test-secret")
     monkeypatch.setenv("FINSIGHT_EMBEDDING_MODEL", "custom-model")
     monkeypatch.setenv("FINSIGHT_EMBEDDING_BATCH_SIZE", "32")
+    monkeypatch.setenv("FINSIGHT_GENERATION_MODEL", "test-generation-model")
+    monkeypatch.setenv("FINSIGHT_GENERATION_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("FINSIGHT_GENERATION_REASONING_EFFORT", "medium")
 
     settings = Settings()
 
@@ -147,6 +153,9 @@ def test_embedding_settings_read_secret_and_batch_overrides(
     assert str(settings.openai_api_key) == "**********"
     assert settings.embedding_model == "custom-model"
     assert settings.embedding_batch_size == 32
+    assert settings.generation_model == "test-generation-model"
+    assert settings.generation_max_output_tokens == 4096
+    assert settings.generation_reasoning_effort == "medium"
 
 
 def test_embedding_settings_treat_blank_secret_as_unconfigured(
@@ -166,6 +175,10 @@ def test_embedding_settings_treat_blank_secret_as_unconfigured(
         ("FINSIGHT_EMBEDDING_BATCH_SIZE", "0", "greater than or equal"),
         ("FINSIGHT_EMBEDDING_BATCH_SIZE", "2049", "less than or equal"),
         ("FINSIGHT_EMBEDDING_MODEL", "", "at least 1 character"),
+        ("FINSIGHT_GENERATION_MODEL", "", "at least 1 character"),
+        ("FINSIGHT_GENERATION_MAX_OUTPUT_TOKENS", "255", "greater than or equal"),
+        ("FINSIGHT_GENERATION_MAX_OUTPUT_TOKENS", "20001", "less than or equal"),
+        ("FINSIGHT_GENERATION_REASONING_EFFORT", "extreme", "Input should be"),
     ],
 )
 def test_embedding_settings_reject_incompatible_values(
