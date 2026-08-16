@@ -24,7 +24,9 @@ ENV HOSTNAME=0.0.0.0 \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000
 
-RUN groupadd --system --gid 10001 finsight \
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx \
+    && groupadd --system --gid 10001 finsight \
     && useradd --system --uid 10001 --gid finsight --home-dir /app --shell /usr/sbin/nologin finsight
 
 WORKDIR /app
