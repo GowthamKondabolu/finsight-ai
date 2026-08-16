@@ -9,6 +9,7 @@ import pytest
 
 from finsight.config.settings import Settings
 from finsight.ingestion.sec_client import (
+    SEC_COMPANY_FACTS_BASE_URL,
     SEC_DATA_BASE_URL,
     SecEdgarClient,
     SecEdgarError,
@@ -55,6 +56,36 @@ def sample_submissions_payload() -> dict[str, Any]:
     }
 
 
+def sample_company_facts_payload() -> dict[str, Any]:
+    """Return one valid SEC company-facts response."""
+
+    return {
+        "cik": 320193,
+        "entityName": "Apple Inc.",
+        "facts": {
+            "us-gaap": {
+                "Assets": {
+                    "label": "Assets",
+                    "description": "Total assets.",
+                    "units": {
+                        "USD": [
+                            {
+                                "end": "2024-06-29",
+                                "val": 331612000000,
+                                "accn": "0000320193-24-000123",
+                                "fy": 2024,
+                                "fp": "Q3",
+                                "form": "10-Q",
+                                "filed": "2024-08-02",
+                            }
+                        ]
+                    },
+                }
+            }
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_fetch_company_submissions_identifies_client_and_parses_response() -> None:
     """A successful request should identify FinSight and return typed data."""
@@ -81,6 +112,55 @@ async def test_fetch_company_submissions_identifies_client_and_parses_response()
     assert str(requests[0].url) == (f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json")
     assert requests[0].headers["User-Agent"] == ("FinSightAI/0.1 engineering@example.org")
     assert requests[0].headers["Accept"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_fetch_company_facts_parses_typed_observations() -> None:
+    """The company-facts endpoint should return validated normalized XBRL data."""
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=sample_company_facts_payload())
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = SecEdgarClient(sec_settings(), http_client=http_client)
+        company_facts = await client.fetch_company_facts("320193")
+
+    assert company_facts.cik == "0000320193"
+    assert company_facts.observation_count == 1
+    assert str(requests[0].url) == (f"{SEC_COMPANY_FACTS_BASE_URL}/CIK0000320193.json")
+
+
+@pytest.mark.asyncio
+async def test_fetch_company_facts_wraps_contract_errors() -> None:
+    """Invalid company-facts responses should expose an ingestion error."""
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"cik": 320193}))
+
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = SecEdgarClient(sec_settings(), http_client=http_client)
+
+        with pytest.raises(SecEdgarPayloadError, match="failed validation"):
+            await client.fetch_company_facts("320193")
+
+
+@pytest.mark.asyncio
+async def test_fetch_company_facts_rejects_mismatched_cik() -> None:
+    """A company-facts response must belong to the requested issuer."""
+
+    payload = sample_company_facts_payload()
+    payload["cik"] = 789019
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = SecEdgarClient(sec_settings(), http_client=http_client)
+
+        with pytest.raises(SecEdgarPayloadError, match="does not match"):
+            await client.fetch_company_facts("320193")
 
 
 @pytest.mark.parametrize(

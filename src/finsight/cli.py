@@ -9,6 +9,11 @@ from collections.abc import Collection, Sequence
 from dataclasses import asdict
 
 from finsight.config.settings import get_settings
+from finsight.ingestion.company_facts_service import (
+    DEFAULT_COMPANY_FACT_TAXONOMIES,
+    CompanyFactsIngestionResult,
+    ingest_company_facts,
+)
 from finsight.ingestion.sec_client import SecEdgarClient
 from finsight.ingestion.service import (
     DEFAULT_FILING_FORMS,
@@ -54,6 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Maximum filings to ingest, from 1 to {MAX_FILINGS_PER_RUN}.",
     )
 
+    facts_parser = subparsers.add_parser(
+        "ingest-company-facts",
+        help="Ingest normalized SEC XBRL company facts for one issuer.",
+    )
+    facts_parser.add_argument(
+        "--cik",
+        required=True,
+        help="SEC Central Index Key, with or without leading zeros.",
+    )
+    facts_parser.add_argument(
+        "--taxonomy",
+        dest="taxonomies",
+        action="append",
+        default=None,
+        help="XBRL taxonomy to ingest. Repeat for multiple taxonomies.",
+    )
+
     return parser
 
 
@@ -82,7 +104,32 @@ async def run_sec_ingestion(
         await engine.dispose()
 
 
-def format_ingestion_result(result: SecIngestionResult) -> str:
+async def run_company_facts_ingestion(
+    *,
+    cik: str,
+    taxonomies: Collection[str],
+) -> CompanyFactsIngestionResult:
+    """Run company-facts ingestion and release network and database resources."""
+
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+
+    try:
+        async with SecEdgarClient(settings) as client:
+            return await ingest_company_facts(
+                client=client,
+                session_factory=session_factory,
+                cik=cik,
+                taxonomies=taxonomies,
+            )
+    finally:
+        await engine.dispose()
+
+
+def format_ingestion_result(
+    result: SecIngestionResult | CompanyFactsIngestionResult,
+) -> str:
     """Serialize an ingestion result as readable JSON."""
 
     payload = asdict(result)
@@ -96,15 +143,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
 
-    forms: Collection[str] = (
-        arguments.forms if arguments.forms is not None else DEFAULT_FILING_FORMS
-    )
-    result = asyncio.run(
-        run_sec_ingestion(
-            cik=str(arguments.cik),
-            forms=forms,
-            limit=int(arguments.limit),
+    if arguments.command == "ingest-sec":
+        forms: Collection[str] = (
+            arguments.forms if arguments.forms is not None else DEFAULT_FILING_FORMS
         )
-    )
+        result: SecIngestionResult | CompanyFactsIngestionResult = asyncio.run(
+            run_sec_ingestion(
+                cik=str(arguments.cik),
+                forms=forms,
+                limit=int(arguments.limit),
+            )
+        )
+    else:
+        taxonomies: Collection[str] = (
+            arguments.taxonomies
+            if arguments.taxonomies is not None
+            else DEFAULT_COMPANY_FACT_TAXONOMIES
+        )
+        result = asyncio.run(
+            run_company_facts_ingestion(
+                cik=str(arguments.cik),
+                taxonomies=taxonomies,
+            )
+        )
+
     print(format_ingestion_result(result))
     return 0

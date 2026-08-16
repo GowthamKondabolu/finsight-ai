@@ -1,12 +1,14 @@
 """Tests for idempotent SEC persistence operations."""
 
 from datetime import date
+from decimal import Decimal
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import finsight.storage.repositories as repositories_module
 from finsight.storage.models import Company, Filing, FilingSection
 from finsight.storage.repositories import (
     CompanyUpsert,
@@ -15,10 +17,12 @@ from finsight.storage.repositories import (
     FilingIdentityConflictError,
     FilingPersistenceError,
     FilingSectionCreate,
+    FinancialFactCreate,
     find_existing_accession_numbers,
     get_filing_by_accession_number,
     store_filing,
     store_filing_content,
+    store_financial_facts,
     upsert_company,
 )
 
@@ -209,6 +213,81 @@ async def test_store_filing_content_builds_sections_and_chunks() -> None:
     assert len(section.chunks) == 1
     assert section.chunks[0].chunk_index == 0
     assert section.chunks[0].token_count == 8
+
+
+def financial_fact_command() -> FinancialFactCreate:
+    """Return one exact normalized financial observation."""
+
+    return FinancialFactCreate(
+        observation_key="d" * 64,
+        taxonomy="us-gaap",
+        concept="Revenues",
+        label="Revenue",
+        description="Revenue from customers.",
+        unit="USD",
+        value=Decimal("85777000000"),
+        start_date=date(2024, 4, 1),
+        end_date=date(2024, 6, 29),
+        filed_date=date(2024, 8, 2),
+        fiscal_year=2024,
+        fiscal_period="Q3",
+        form_type="10-Q",
+        accession_number="0000320193-24-000123",
+        frame="CY2024Q2",
+        source_metadata={"provider": "sec-companyfacts"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_store_financial_facts_avoids_empty_database_query() -> None:
+    """An empty normalized batch should return without executing SQL."""
+
+    session = AsyncMock(spec=AsyncSession)
+
+    stored = await store_financial_facts(session, uuid4(), [])
+
+    assert stored.created_count == 0
+    assert stored.existing_count == 0
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_store_financial_facts_reports_created_and_existing_rows() -> None:
+    """Bulk fact inserts should report conflicts without duplicating observations."""
+
+    session = AsyncMock(spec=AsyncSession)
+    result = Mock()
+    result.scalars.return_value.all.return_value = [uuid4()]
+    session.execute.return_value = result
+    fact = financial_fact_command()
+
+    stored = await store_financial_facts(session, uuid4(), [fact, fact])
+
+    assert stored.created_count == 1
+    assert stored.existing_count == 1
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_store_financial_facts_bounds_insert_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large XBRL histories should not exceed PostgreSQL parameter limits."""
+
+    monkeypatch.setattr(repositories_module, "MAX_FINANCIAL_FACTS_PER_INSERT", 1)
+    session = AsyncMock(spec=AsyncSession)
+    first_result = Mock()
+    first_result.scalars.return_value.all.return_value = [uuid4()]
+    second_result = Mock()
+    second_result.scalars.return_value.all.return_value = [uuid4()]
+    session.execute.side_effect = [first_result, second_result]
+    facts = [financial_fact_command(), financial_fact_command()]
+
+    stored = await store_financial_facts(session, uuid4(), facts)
+
+    assert stored.created_count == 2
+    assert stored.existing_count == 0
+    assert session.execute.await_count == 2
 
 
 @pytest.mark.asyncio
