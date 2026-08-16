@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Durable agent orchestration and MCP evidence tools**
+**Current milestone: Reproducible evaluation and paired benchmark contracts**
 
 Implemented:
 
@@ -52,6 +52,11 @@ Implemented:
 - Attributable, timestamped approve-or-reject decisions and release authorization
 - Durable `POST /v1/investigations/runs` start and review endpoints
 - Official MCP Python SDK v2 server with bounded, read-only SEC evidence tools
+- Versioned benchmark datasets and system-run contracts with SHA-256 identity
+- Separate retrieval, citation, faithfulness, numerical, safety, outcome, and latency metrics
+- Seeded paired bootstrap intervals, effect sizes, and exact paired sign tests
+- Synthetic-fixture safeguards that prevent example metrics from becoming performance claims
+- `finsight evaluate` offline control-versus-treatment workflow
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -60,7 +65,6 @@ Implemented:
 
 Planned next:
 
-- Retrieval and answer-quality evaluation
 - Experiment tracking and controlled A/B testing
 - Analyst-facing application and AWS deployment
 
@@ -90,7 +94,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, and MCP evidence tools are implemented and tested. Evaluation and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, and reproducible offline evaluation are implemented and tested. Controlled experimentation and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -366,6 +370,23 @@ finsight-mcp
 
 The server publishes `search_sec_filing_evidence` and `list_sec_company_facts`. Both tools are bounded, read-only, idempotent, citation-preserving, and intentionally exclude approval or mutation actions. See [MCP evidence tools](docs/mcp_tools.md).
 
+### Run the evaluation contract fixture
+
+Compare the synthetic control and treatment records without a database, network call, or model invocation:
+
+```bash
+finsight evaluate \
+  --dataset evals/fixtures/synthetic_dataset_v1.json \
+  --control-run evals/fixtures/control_run_v1.json \
+  --treatment-run evals/fixtures/treatment_run_v1.json \
+  --output artifacts/evaluation/synthetic-report.json \
+  --top-k 3 \
+  --bootstrap-iterations 2000 \
+  --seed 17
+```
+
+The fixture verifies metric and reporting contracts only; it is not a FinSight performance benchmark. See [Evaluation and paired experiments](docs/evaluation.md) for artifact schemas, metric definitions, statistical design, and publication safeguards.
+
 ### Run the API
 
 ```bash
@@ -420,7 +441,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 6. ✅ Add embeddings, hybrid retrieval, metadata filtering, and reranking.
 7. ✅ Build citation-grounded answer generation and numerical validation.
 8. ✅ Add LangGraph orchestration, MCP tools, and human approval states.
-9. Create retrieval, faithfulness, citation, safety, and latency evaluations.
+9. ✅ Create retrieval, faithfulness, citation, safety, and latency evaluations.
 10. Add experiment tracking and controlled A/B testing.
 11. Build the analyst-facing application.
 12. Add observability, container deployment, Terraform, and AWS infrastructure.

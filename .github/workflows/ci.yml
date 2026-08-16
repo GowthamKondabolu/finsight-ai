@@ -43,6 +43,18 @@ jobs:
       - name: Run mypy
         run: mypy src tests
 
+      - name: Validate offline evaluation contract
+        run: |
+          finsight evaluate \
+            --dataset evals/fixtures/synthetic_dataset_v1.json \
+            --control-run evals/fixtures/control_run_v1.json \
+            --treatment-run evals/fixtures/treatment_run_v1.json \
+            --output /tmp/finsight-evaluation-report.json \
+            --top-k 3 \
+            --bootstrap-iterations 200 \
+            --seed 17 > /tmp/finsight-evaluation-stdout.json
+          python -c "import json; report=json.load(open('/tmp/finsight-evaluation-report.json')); assert report['benchmark_claim_allowed'] is False"
+
       - name: Validate Docker Compose
         run: docker compose config
 
