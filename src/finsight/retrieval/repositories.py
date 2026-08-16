@@ -165,7 +165,7 @@ async def search_semantic_chunks(
     if not model.strip():
         raise ValueError("embedding model cannot be blank")
 
-    distance = FilingChunk.embedding.op("<=>")(list(query_embedding))
+    distance = FilingChunk.embedding.cosine_distance(list(query_embedding))
     score = 1.0 - distance
     statement = _candidate_statement(score).where(
         FilingChunk.embedding.is_not(None),

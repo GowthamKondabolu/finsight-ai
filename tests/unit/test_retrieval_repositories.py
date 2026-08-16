@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
+from sqlalchemy import Float
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsight.retrieval.repositories import (
@@ -97,9 +98,11 @@ async def test_semantic_search_uses_cosine_distance_and_model_filter() -> None:
     )
 
     assert candidates[0].raw_score == 0.9
-    statement = str(session.execute.await_args.args[0])
+    executed_statement = session.execute.await_args.args[0]
+    statement = str(executed_statement)
     assert "<=>" in statement
     assert "filing_chunks.embedding_model" in statement
+    assert isinstance(tuple(executed_statement.selected_columns)[-1].type, Float)
 
 
 @pytest.mark.asyncio
