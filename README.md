@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Retrieval embeddings and pgvector indexing**
+**Current milestone: Hybrid retrieval and citation-ready evidence**
 
 Implemented:
 
@@ -36,6 +36,11 @@ Implemented:
 - Secure OpenAI `text-embedding-3-small` adapter with explicit 1,536-dimension vectors
 - Bounded, issuer-filtered, idempotent chunk embedding backfills
 - Optimistic content-hash writes and persisted embedding-model provenance
+- PostgreSQL full-text and pgvector cosine candidate retrieval
+- Typed CIK, form, filing-date, and section metadata filters
+- Transparent weighted reciprocal-rank-fusion reranking
+- Citation-complete retrieval results with channel ranks and raw scores
+- `POST /v1/retrieval/search` hybrid-search endpoint
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -44,9 +49,8 @@ Implemented:
 
 Planned next:
 
-- Hybrid semantic and keyword retrieval
-- Metadata filtering and reranking
 - Citation-grounded generation
+- Numerical validation against exact SEC company facts
 - LangGraph investigation workflow
 - MCP-compatible financial-data tools
 - Numerical verification and safety guardrails
@@ -80,7 +84,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, and embedding persistence are implemented and integration-tested. Hybrid retrieval, agent orchestration, validation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, and hybrid retrieval are implemented and integration-tested. Answer generation, agent orchestration, validation, and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -276,6 +280,25 @@ Omit `--cik` to backfill across all issuers. The command sends bounded batches t
 
 The database transaction is opened only after each external embedding response returns. Writes require the chunk’s content hash to remain unchanged, so concurrent document changes produce an explicit retry error rather than attaching a stale vector. See [Embedding pipeline](docs/embeddings.md) for the contract, security controls, and limitations. The adapter follows the [official OpenAI embeddings guidance](https://developers.openai.com/api/docs/guides/embeddings).
 
+### Search filing evidence
+
+Start the API after ingesting and embedding filing chunks, then issue a hybrid search:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/retrieval/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What supply-chain risks changed?",
+    "cik": "0000320193",
+    "form_types": ["10-K"],
+    "section_names": ["Item 1A. Risk Factors"],
+    "top_k": 5,
+    "candidate_k": 50
+  }'
+```
+
+PostgreSQL independently ranks keyword and semantic candidates under the same metadata filters. FinSight reranks their union with weighted reciprocal-rank fusion and returns the content, fused score, raw channel scores, channel ranks, filing accession, dates, section, chunk position, and SEC source URL. See [Hybrid retrieval](docs/retrieval.md) for the ranking and citation contracts.
+
 ### Run the API
 
 ```bash
@@ -327,7 +350,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 3. ✅ Build policy-compliant SEC submissions and primary filing-document ingestion with an idempotent CLI workflow.
 4. ✅ Implement metadata-aware HTML parsing, section extraction, and deterministic chunking.
 5. ✅ Add SEC company-facts ingestion and normalized financial metrics.
-6. 🔄 Add embeddings, hybrid retrieval, metadata filtering, and reranking. Embedding generation and persistence are complete.
+6. ✅ Add embeddings, hybrid retrieval, metadata filtering, and reranking.
 7. Build citation-grounded answer generation and numerical validation.
 8. Add LangGraph orchestration, MCP tools, and human approval states.
 9. Create retrieval, faithfulness, citation, safety, and latency evaluations.
