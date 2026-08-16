@@ -44,8 +44,9 @@ Unit tests cover schema rejection, prompt-injection boundaries, unknown citation
 
 ## Current limitations
 
-- Evidence IDs are request-local and investigation runs are not yet persisted.
+- Evidence IDs remain request-local within each checkpointed investigation.
 - Exact XBRL concept filters require clients to know SEC concept names.
 - Citation entailment and answer faithfulness still require a versioned evaluation dataset; identifier validity alone does not prove that a passage supports a claim.
 - The generation endpoint currently creates provider and database resources per request; service-lifespan pooling belongs to the deployment milestone.
-- Agent workflow state, human approval actions, and audit-event persistence are planned for the LangGraph milestone.
+- The legacy `/v1/investigations/answer` endpoint is a stateless technical preview. Release-controlled use should call the durable `/v1/investigations/runs` workflow described in [Durable investigation workflow](agent_workflow.md).
+- Reviewer authentication, role authorization, and an append-only audit-event ledger remain deployment work; the current workflow persists the caller-supplied reviewer identity and timestamp.

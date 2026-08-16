@@ -1,8 +1,8 @@
 """API response schemas."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal, Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -247,3 +247,77 @@ class InvestigationAnswerResponse(BaseModel):
     model_name: str | None
     requires_human_review: bool
     review_reasons: list[str]
+
+
+class InvestigationWorkflowStartRequest(InvestigationAnswerRequest):
+    """Start a durable investigation under a client-visible thread identifier."""
+
+    thread_id: UUID = Field(default_factory=uuid4)
+
+
+class HumanReviewDecisionRequest(BaseModel):
+    """Explicit approve-or-reject action from an attributable reviewer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: Literal["approve", "reject"]
+    reviewer_id: str = Field(min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("reviewer_id")
+    @classmethod
+    def normalize_reviewer_id(cls, value: str) -> str:
+        """Reject whitespace-only reviewer identities."""
+
+        candidate = value.strip()
+        if not candidate:
+            raise ValueError("reviewer_id cannot be blank")
+        return candidate
+
+    @field_validator("notes")
+    @classmethod
+    def normalize_notes(cls, value: str | None) -> str | None:
+        """Normalize optional audit notes."""
+
+        if value is None:
+            return None
+        candidate = value.strip()
+        return candidate or None
+
+
+class HumanReviewRequestResponse(BaseModel):
+    """Evidence summary returned while the graph awaits a reviewer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    question: str
+    answer_status: Literal["grounded", "insufficient_evidence", "needs_review"]
+    answer: str
+    source_ids: list[str]
+    limitations: list[str]
+    review_reasons: list[str]
+    proposed_action: Literal["release_answer"]
+
+
+class HumanReviewDecisionResponse(BaseModel):
+    """Persisted human decision and audit metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision: Literal["approve", "reject"]
+    reviewer_id: str
+    notes: str | None
+    decided_at: datetime
+
+
+class InvestigationWorkflowResponse(BaseModel):
+    """Durable workflow state before or after the human review gate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    thread_id: UUID
+    status: Literal["pending_review", "approved", "rejected"]
+    release_authorized: bool
+    answer: InvestigationAnswerResponse
+    review_request: HumanReviewRequestResponse | None
+    review_decision: HumanReviewDecisionResponse | None

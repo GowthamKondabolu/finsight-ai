@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, status
 
@@ -11,10 +12,22 @@ from finsight import __version__
 from finsight.agents.contracts import GroundedAnswerResult, InvestigationQuery
 from finsight.agents.generation import AnswerGenerationError, OpenAIAnswerGenerator
 from finsight.agents.investigation import GroundedAnswerContractError, answer_investigation
+from finsight.agents.workflow import (
+    HumanReviewDecision,
+    InvestigationWorkflowResult,
+    WorkflowNotFoundError,
+    WorkflowStateConflictError,
+    postgres_investigation_workflow,
+)
 from finsight.api.schemas import (
     HealthResponse,
+    HumanReviewDecisionRequest,
+    HumanReviewDecisionResponse,
+    HumanReviewRequestResponse,
     InvestigationAnswerRequest,
     InvestigationAnswerResponse,
+    InvestigationWorkflowResponse,
+    InvestigationWorkflowStartRequest,
     RetrievalResultResponse,
     RetrievalSearchRequest,
     RetrievalSearchResponse,
@@ -30,6 +43,10 @@ from finsight.storage.database import create_database_engine, create_session_fac
 
 RetrievalHandler = Callable[[RetrievalQuery], Awaitable[list[HybridSearchResult]]]
 InvestigationHandler = Callable[[InvestigationQuery], Awaitable[GroundedAnswerResult]]
+WorkflowStartHandler = Callable[[UUID, InvestigationQuery], Awaitable[InvestigationWorkflowResult]]
+WorkflowReviewHandler = Callable[
+    [UUID, HumanReviewDecision], Awaitable[InvestigationWorkflowResult]
+]
 
 
 async def run_retrieval_query(
@@ -78,10 +95,105 @@ async def run_investigation_query(
         await engine.dispose()
 
 
+async def run_workflow_start(
+    *,
+    settings: Settings,
+    thread_id: UUID,
+    query: InvestigationQuery,
+) -> InvestigationWorkflowResult:
+    """Generate an answer, checkpoint it, and stop at the review interrupt."""
+
+    embedding_provider = OpenAIEmbeddingProvider.from_settings(settings)
+    answer_generator = OpenAIAnswerGenerator.from_settings(settings)
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+
+    async def execute(request: InvestigationQuery) -> GroundedAnswerResult:
+        return await answer_investigation(
+            query=request,
+            embedding_provider=embedding_provider,
+            answer_generator=answer_generator,
+            session_factory=session_factory,
+        )
+
+    try:
+        async with (
+            embedding_provider,
+            answer_generator,
+            postgres_investigation_workflow(
+                settings=settings,
+                executor=execute,
+            ) as workflow,
+        ):
+            return await workflow.start(thread_id=thread_id, query=query)
+    finally:
+        await engine.dispose()
+
+
+async def run_workflow_review(
+    *,
+    settings: Settings,
+    thread_id: UUID,
+    decision: HumanReviewDecision,
+) -> InvestigationWorkflowResult:
+    """Resume a persisted workflow without allocating AI provider resources."""
+
+    async def unexpected_execution(_: InvestigationQuery) -> GroundedAnswerResult:
+        raise WorkflowStateConflictError("review resume attempted to restart investigation")
+
+    async with postgres_investigation_workflow(
+        settings=settings,
+        executor=unexpected_execution,
+    ) as workflow:
+        return await workflow.resume(thread_id=thread_id, decision=decision)
+
+
+def _investigation_query(request: InvestigationAnswerRequest) -> InvestigationQuery:
+    """Map a validated API request to the provider-independent domain contract."""
+
+    return InvestigationQuery(
+        question=request.question,
+        top_k=request.top_k,
+        candidate_k=request.candidate_k,
+        cik=request.cik,
+        form_types=tuple(request.form_types),
+        filed_from=request.filed_from,
+        filed_to=request.filed_to,
+        section_names=tuple(request.section_names),
+        fact_concepts=tuple(request.fact_concepts),
+        fact_limit=request.fact_limit,
+    )
+
+
+def _workflow_response(result: InvestigationWorkflowResult) -> InvestigationWorkflowResponse:
+    """Translate durable domain state into the public API schema."""
+
+    review_request = (
+        HumanReviewRequestResponse.model_validate(result.review_request.model_dump())
+        if result.review_request is not None
+        else None
+    )
+    review_decision = (
+        HumanReviewDecisionResponse.model_validate(result.review_decision.model_dump())
+        if result.review_decision is not None
+        else None
+    )
+    return InvestigationWorkflowResponse(
+        thread_id=result.thread_id,
+        status=result.status,
+        release_authorized=result.status == "approved",
+        answer=InvestigationAnswerResponse.model_validate(asdict(result.answer)),
+        review_request=review_request,
+        review_decision=review_decision,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     retrieval_handler: RetrievalHandler | None = None,
     investigation_handler: InvestigationHandler | None = None,
+    workflow_start_handler: WorkflowStartHandler | None = None,
+    workflow_review_handler: WorkflowReviewHandler | None = None,
 ) -> FastAPI:
     """Create an application using explicit or environment-based settings."""
 
@@ -158,18 +270,7 @@ def create_app(
     async def answer(request: InvestigationAnswerRequest) -> InvestigationAnswerResponse:
         """Return citation-enforced claims and deterministic numerical checks."""
 
-        query = InvestigationQuery(
-            question=request.question,
-            top_k=request.top_k,
-            candidate_k=request.candidate_k,
-            cik=request.cik,
-            form_types=tuple(request.form_types),
-            filed_from=request.filed_from,
-            filed_to=request.filed_to,
-            section_names=tuple(request.section_names),
-            fact_concepts=tuple(request.fact_concepts),
-            fact_limit=request.fact_limit,
-        )
+        query = _investigation_query(request)
         if investigation_handler is not None:
             result = await investigation_handler(query)
         else:
@@ -192,6 +293,83 @@ def create_app(
                 ) from exc
 
         return InvestigationAnswerResponse.model_validate(asdict(result))
+
+    @application.post(
+        "/v1/investigations/runs",
+        response_model=InvestigationWorkflowResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["investigations"],
+    )
+    async def start_workflow(
+        request: InvestigationWorkflowStartRequest,
+    ) -> InvestigationWorkflowResponse:
+        """Start a durable investigation and pause before answer release."""
+
+        query = _investigation_query(request)
+        try:
+            if workflow_start_handler is not None:
+                result = await workflow_start_handler(request.thread_id, query)
+            else:
+                result = await run_workflow_start(
+                    settings=resolved_settings,
+                    thread_id=request.thread_id,
+                    query=query,
+                )
+        except WorkflowStateConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        except ValueError as exc:
+            if "FINSIGHT_OPENAI_API_KEY" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="investigation AI providers are not configured",
+            ) from exc
+        except (AnswerGenerationError, GroundedAnswerContractError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="generated answer failed the grounding contract",
+            ) from exc
+        return _workflow_response(result)
+
+    @application.post(
+        "/v1/investigations/runs/{thread_id}/review",
+        response_model=InvestigationWorkflowResponse,
+        tags=["investigations"],
+    )
+    async def review_workflow(
+        thread_id: UUID,
+        request: HumanReviewDecisionRequest,
+    ) -> InvestigationWorkflowResponse:
+        """Approve or reject exactly one persisted pending investigation."""
+
+        decision = HumanReviewDecision(
+            decision=request.decision,
+            reviewer_id=request.reviewer_id,
+            notes=request.notes,
+        )
+        try:
+            if workflow_review_handler is not None:
+                result = await workflow_review_handler(thread_id, decision)
+            else:
+                result = await run_workflow_review(
+                    settings=resolved_settings,
+                    thread_id=thread_id,
+                    decision=decision,
+                )
+        except WorkflowNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        except WorkflowStateConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        return _workflow_response(result)
 
     return application
 
