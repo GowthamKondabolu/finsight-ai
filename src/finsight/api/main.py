@@ -20,6 +20,10 @@ from finsight.agents.workflow import (
     postgres_investigation_workflow,
 )
 from finsight.api.schemas import (
+    ExperimentAssignmentRequest,
+    ExperimentAssignmentResponse,
+    ExperimentEventRequest,
+    ExperimentEventResponse,
     HealthResponse,
     HumanReviewDecisionRequest,
     HumanReviewDecisionResponse,
@@ -33,13 +37,30 @@ from finsight.api.schemas import (
     RetrievalSearchResponse,
 )
 from finsight.config.settings import Settings, get_settings
+from finsight.experiments.contracts import (
+    AssignmentResult,
+    ExperimentAnalysisReport,
+    ExperimentContractError,
+    ExperimentEventInput,
+    ExperimentEventResult,
+    ExperimentNotFoundError,
+)
+from finsight.experiments.repositories import (
+    analyze_registered_experiment,
+    assign_experiment_variant,
+    record_experiment_event,
+)
 from finsight.retrieval.embeddings import OpenAIEmbeddingProvider
 from finsight.retrieval.search import (
     HybridSearchResult,
     RetrievalQuery,
     hybrid_search,
 )
-from finsight.storage.database import create_database_engine, create_session_factory
+from finsight.storage.database import (
+    create_database_engine,
+    create_session_factory,
+    session_scope,
+)
 
 RetrievalHandler = Callable[[RetrievalQuery], Awaitable[list[HybridSearchResult]]]
 InvestigationHandler = Callable[[InvestigationQuery], Awaitable[GroundedAnswerResult]]
@@ -47,6 +68,9 @@ WorkflowStartHandler = Callable[[UUID, InvestigationQuery], Awaitable[Investigat
 WorkflowReviewHandler = Callable[
     [UUID, HumanReviewDecision], Awaitable[InvestigationWorkflowResult]
 ]
+ExperimentAssignmentHandler = Callable[[str, str], Awaitable[AssignmentResult]]
+ExperimentEventHandler = Callable[[str, ExperimentEventInput], Awaitable[ExperimentEventResult]]
+ExperimentAnalysisHandler = Callable[[str], Awaitable[ExperimentAnalysisReport]]
 
 
 async def run_retrieval_query(
@@ -148,6 +172,68 @@ async def run_workflow_review(
         return await workflow.resume(thread_id=thread_id, decision=decision)
 
 
+async def run_experiment_assignment(
+    *,
+    settings: Settings,
+    experiment_key: str,
+    unit_id: str,
+) -> AssignmentResult:
+    """Persist one deterministic assignment and release database resources."""
+
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            return await assign_experiment_variant(
+                session,
+                experiment_key=experiment_key,
+                unit_id=unit_id,
+                assignment_secret=settings.experiment_assignment_secret.get_secret_value(),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def run_experiment_event(
+    *,
+    settings: Settings,
+    experiment_key: str,
+    event_input: ExperimentEventInput,
+) -> ExperimentEventResult:
+    """Persist validated experiment telemetry and release database resources."""
+
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            return await record_experiment_event(
+                session,
+                experiment_key=experiment_key,
+                event_input=event_input,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def run_experiment_analysis(
+    *,
+    settings: Settings,
+    experiment_key: str,
+) -> ExperimentAnalysisReport:
+    """Analyze registered experiment telemetry and release database resources."""
+
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            return await analyze_registered_experiment(
+                session,
+                experiment_key=experiment_key,
+            )
+    finally:
+        await engine.dispose()
+
+
 def _investigation_query(request: InvestigationAnswerRequest) -> InvestigationQuery:
     """Map a validated API request to the provider-independent domain contract."""
 
@@ -194,6 +280,9 @@ def create_app(
     investigation_handler: InvestigationHandler | None = None,
     workflow_start_handler: WorkflowStartHandler | None = None,
     workflow_review_handler: WorkflowReviewHandler | None = None,
+    experiment_assignment_handler: ExperimentAssignmentHandler | None = None,
+    experiment_event_handler: ExperimentEventHandler | None = None,
+    experiment_analysis_handler: ExperimentAnalysisHandler | None = None,
 ) -> FastAPI:
     """Create an application using explicit or environment-based settings."""
 
@@ -370,6 +459,85 @@ def create_app(
                 detail=str(exc),
             ) from exc
         return _workflow_response(result)
+
+    @application.post(
+        "/v1/experiments/{experiment_key}/assignments",
+        response_model=ExperimentAssignmentResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["experiments"],
+    )
+    async def assign_experiment(
+        experiment_key: str,
+        request: ExperimentAssignmentRequest,
+    ) -> ExperimentAssignmentResponse:
+        """Return a privacy-preserving, persisted, sticky A/B assignment."""
+
+        try:
+            result = (
+                await experiment_assignment_handler(experiment_key, request.unit_id)
+                if experiment_assignment_handler is not None
+                else await run_experiment_assignment(
+                    settings=resolved_settings,
+                    experiment_key=experiment_key,
+                    unit_id=request.unit_id,
+                )
+            )
+        except ExperimentNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ExperimentContractError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return ExperimentAssignmentResponse.model_validate(result.model_dump())
+
+    @application.post(
+        "/v1/experiments/{experiment_key}/events",
+        response_model=ExperimentEventResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["experiments"],
+    )
+    async def record_experiment_telemetry(
+        experiment_key: str,
+        request: ExperimentEventRequest,
+    ) -> ExperimentEventResponse:
+        """Record exactly one idempotent exposure or registered outcome."""
+
+        event_input = ExperimentEventInput.model_validate(request.model_dump())
+        try:
+            result = (
+                await experiment_event_handler(experiment_key, event_input)
+                if experiment_event_handler is not None
+                else await run_experiment_event(
+                    settings=resolved_settings,
+                    experiment_key=experiment_key,
+                    event_input=event_input,
+                )
+            )
+        except ExperimentNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ExperimentContractError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return ExperimentEventResponse.model_validate(result.model_dump())
+
+    @application.get(
+        "/v1/experiments/{experiment_key}/analysis",
+        response_model=ExperimentAnalysisReport,
+        tags=["experiments"],
+    )
+    async def analyze_experiment(experiment_key: str) -> ExperimentAnalysisReport:
+        """Return no-peeking experiment progress or terminal inference."""
+
+        try:
+            return (
+                await experiment_analysis_handler(experiment_key)
+                if experiment_analysis_handler is not None
+                else await run_experiment_analysis(
+                    settings=resolved_settings,
+                    experiment_key=experiment_key,
+                )
+            )
+        except ExperimentNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ExperimentContractError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return application
 

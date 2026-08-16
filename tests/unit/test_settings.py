@@ -1,20 +1,18 @@
 """Tests for application configuration."""
 
-from typing import Literal
-
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from finsight.config.settings import DEFAULT_DATABASE_URL, Settings
+from finsight.config.settings import Settings
 
 
-def test_default_database_configuration_is_safe_for_local_development() -> None:
-    """Local settings should provide bounded pool defaults and mask credentials."""
+def test_required_runtime_secrets_are_masked() -> None:
+    """Injected test configuration should mask all credential-bearing values."""
 
     settings = Settings()
 
-    assert settings.database_url.get_secret_value() == DEFAULT_DATABASE_URL
     assert str(settings.database_url) == "**********"
+    assert str(settings.experiment_assignment_secret) == "**********"
     assert settings.database_echo is False
     assert settings.database_pool_size == 5
     assert settings.database_max_overflow == 10
@@ -30,12 +28,16 @@ def test_settings_read_prefixed_environment_variables(
     monkeypatch.setenv("FINSIGHT_LOG_LEVEL", "WARNING")
     monkeypatch.setenv(
         "FINSIGHT_DATABASE_URL",
-        "postgresql+psycopg://finsight:secure-test-password@localhost:5432/finsight",
+        "postgresql+psycopg://finsight@db:5432/finsight",
     )
     monkeypatch.setenv("FINSIGHT_DATABASE_ECHO", "true")
     monkeypatch.setenv("FINSIGHT_DATABASE_POOL_SIZE", "8")
     monkeypatch.setenv("FINSIGHT_DATABASE_MAX_OVERFLOW", "12")
     monkeypatch.setenv("FINSIGHT_DATABASE_POOL_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv(
+        "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET",
+        "staging-test-assignment-secret-32-characters",
+    )
 
     settings = Settings()
 
@@ -45,6 +47,37 @@ def test_settings_read_prefixed_environment_variables(
     assert settings.database_pool_size == 8
     assert settings.database_max_overflow == 12
     assert settings.database_pool_timeout_seconds == 45
+
+
+def test_experiment_assignment_secret_is_loaded_and_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The assignment secret should come from deployment configuration."""
+
+    assignment_secret = "a" * 32
+    monkeypatch.setenv("FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET", assignment_secret)
+    settings = Settings()
+
+    assert settings.experiment_assignment_secret.get_secret_value() == assignment_secret
+    assert str(settings.experiment_assignment_secret) == "**********"
+
+
+def test_settings_require_experiment_assignment_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FinSight must fail closed when no assignment secret is configured."""
+
+    monkeypatch.setenv("FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET", "")
+
+    with pytest.raises(ValidationError, match="experiment_assignment_secret"):
+        Settings()
+
+
+def test_experiment_assignment_secret_requires_adequate_length() -> None:
+    """Weak assignment HMAC secrets should fail settings validation."""
+
+    with pytest.raises(ValidationError, match="at least 32"):
+        Settings(experiment_assignment_secret=SecretStr("short"))
 
 
 def test_settings_reject_unsupported_database_driver() -> None:
@@ -57,17 +90,15 @@ def test_settings_reject_unsupported_database_driver() -> None:
         Settings(database_url=SecretStr("sqlite:///tmp/finsight.db"))
 
 
-@pytest.mark.parametrize("environment", ["staging", "production"])
-def test_settings_reject_local_password_outside_local_environment(
-    environment: Literal["staging", "production"],
+def test_settings_require_database_url(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Local-only credentials must never be accepted in deployed environments."""
+    """FinSight must fail closed when no database URL is configured."""
 
-    with pytest.raises(
-        ValidationError,
-        match="cannot use the local database password",
-    ):
-        Settings(environment=environment)
+    monkeypatch.setenv("FINSIGHT_DATABASE_URL", "")
+
+    with pytest.raises(ValidationError, match="database_url"):
+        Settings()
 
 
 def test_sec_client_settings_use_policy_safe_defaults() -> None:

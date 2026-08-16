@@ -13,6 +13,10 @@ def test_metadata_registers_expected_tables_and_shared_columns() -> None:
 
     expected_tables = {
         "companies",
+        "experiment_assignments",
+        "experiment_events",
+        "experiment_variants",
+        "experiments",
         "financial_facts",
         "filings",
         "filing_sections",
@@ -140,3 +144,40 @@ def test_chunk_schema_supports_keyword_and_vector_retrieval() -> None:
     assert search_options["using"] == "gin"
     assert vector_options["using"] == "hnsw"
     assert vector_options["ops"] == {"embedding": "vector_cosine_ops"}
+
+
+def test_experiment_schema_preserves_plan_assignment_and_event_identity() -> None:
+    """Experiment plans, sticky assignments, and telemetry need database enforcement."""
+
+    experiments = Base.metadata.tables["experiments"]
+    variants = Base.metadata.tables["experiment_variants"]
+    assignments = Base.metadata.tables["experiment_assignments"]
+    events = Base.metadata.tables["experiment_events"]
+
+    experiment_checks = {
+        constraint.name
+        for constraint in experiments.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assignment_uniques = {
+        constraint.name
+        for constraint in assignments.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    event_indexes = {index.name for index in events.indexes}
+
+    assert experiments.c.experiment_key.unique is True
+    assert experiments.c.plan_fingerprint.unique is True
+    assert isinstance(experiments.c.plan.type, JSONB)
+    assert "ck_experiments_status" in experiment_checks
+    assert "uq_experiment_assignments_experiment_unit" in assignment_uniques
+    assert "uq_experiment_events_assignment_exposure" in event_indexes
+    assert "uq_experiment_events_assignment_metric" in event_indexes
+    assert isinstance(events.c.metric_value.type, Numeric)
+
+    variant_foreign_key = next(iter(variants.c.experiment_id.foreign_keys))
+    assignment_foreign_key = next(iter(assignments.c.experiment_id.foreign_keys))
+    event_foreign_key = next(iter(events.c.assignment_id.foreign_keys))
+    assert variant_foreign_key.ondelete == "CASCADE"
+    assert assignment_foreign_key.ondelete == "CASCADE"
+    assert event_foreign_key.ondelete == "CASCADE"

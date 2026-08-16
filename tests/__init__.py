@@ -1,0 +1,1 @@
+"""FinSight automated test suite."""

@@ -1,6 +1,7 @@
 """API response schemas."""
 
-from datetime import date, datetime
+import math
+from datetime import UTC, date, datetime
 from typing import Literal, Self
 from uuid import UUID, uuid4
 
@@ -16,6 +17,88 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     environment: str
+
+
+class ExperimentAssignmentRequest(BaseModel):
+    """Stable randomization identity that is HMACed before persistence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    unit_id: str = Field(min_length=1, max_length=500)
+
+    @field_validator("unit_id")
+    @classmethod
+    def normalize_unit_id(cls, value: str) -> str:
+        """Reject whitespace-only randomization identifiers."""
+
+        candidate = value.strip()
+        if not candidate:
+            raise ValueError("unit_id cannot be blank")
+        return candidate
+
+
+class ExperimentAssignmentResponse(BaseModel):
+    """Sticky assignment response without the raw or hashed unit identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment_id: UUID
+    experiment_key: str
+    variant_key: str
+    variant_configuration: dict[str, object]
+    assigned_at: datetime
+    existing_assignment: bool
+
+
+class ExperimentEventRequest(BaseModel):
+    """Idempotent exposure or registered metric observation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment_id: UUID
+    event_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$")
+    event_type: Literal["exposure", "outcome"]
+    metric_name: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{2,99}$")
+    metric_value: float | None = None
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def require_event_timezone(cls, value: datetime) -> datetime:
+        """Require an unambiguous experiment event timestamp."""
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def validate_event_shape(self) -> Self:
+        """Keep public telemetry aligned with the experiment domain contract."""
+
+        if self.event_type == "exposure":
+            if self.metric_name is not None or self.metric_value is not None:
+                raise ValueError("exposure events cannot contain a metric")
+        elif self.metric_name is None or self.metric_value is None:
+            raise ValueError("outcome events require metric_name and metric_value")
+        if self.metric_value is not None and not math.isfinite(self.metric_value):
+            raise ValueError("metric_value must be finite")
+        return self
+
+
+class ExperimentEventResponse(BaseModel):
+    """Persisted event identity and idempotency result."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: UUID
+    experiment_key: str
+    assignment_id: UUID
+    variant_key: str
+    event_key: str
+    event_type: Literal["exposure", "outcome"]
+    recorded_at: datetime
+    duplicate: bool
 
 
 class RetrievalSearchRequest(BaseModel):
