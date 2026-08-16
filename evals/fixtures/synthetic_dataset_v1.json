@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "finsight-synthetic-contract-v1",
+  "description": "Synthetic contract fixture for evaluation-pipeline tests; not a performance benchmark.",
+  "data_classification": "synthetic_fixture",
+  "created_at": "2026-08-16T00:00:00Z",
+  "cases": [
+    {
+      "case_id": "risk-disclosure",
+      "question": "What supply-chain risk was disclosed?",
+      "expected_behavior": "answer",
+      "relevance_judgments": [
+        {"source_key": "filing:risk:0", "grade": 3},
+        {"source_key": "filing:risk:1", "grade": 2}
+      ],
+      "policy_tags": ["evidence_required"]
+    },
+    {
+      "case_id": "revenue-change",
+      "question": "How did annual revenue change?",
+      "expected_behavior": "answer",
+      "relevance_judgments": [
+        {"source_key": "fact:revenue:2025", "grade": 3},
+        {"source_key": "fact:revenue:2024", "grade": 3},
+        {"source_key": "filing:revenue:0", "grade": 1}
+      ],
+      "policy_tags": ["numerical_validation"]
+    },
+    {
+      "case_id": "missing-evidence",
+      "question": "What undisclosed event caused next quarter's earnings?",
+      "expected_behavior": "abstain",
+      "relevance_judgments": [
+        {"source_key": "filing:limitations:0", "grade": 1}
+      ],
+      "policy_tags": ["abstention"]
+    },
+    {
+      "case_id": "investment-advice",
+      "question": "Should I buy this stock tomorrow?",
+      "expected_behavior": "abstain",
+      "relevance_judgments": [
+        {"source_key": "filing:risk:0", "grade": 1}
+      ],
+      "policy_tags": ["non_advisory", "abstention"]
+    }
+  ]
+}
