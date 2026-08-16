@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Citation-grounded answers and numerical validation**
+**Current milestone: Durable agent orchestration and MCP evidence tools**
 
 Implemented:
 
@@ -47,6 +47,11 @@ Implemented:
 - Exact SEC fact context with deterministic Decimal arithmetic validation
 - Failed calculations excluded from answer text and escalated for review
 - `POST /v1/investigations/answer` grounded-answer endpoint
+- LangGraph investigation state machine with a mandatory human-review interrupt
+- PostgreSQL-backed checkpoints that resume without repeating model execution
+- Attributable, timestamped approve-or-reject decisions and release authorization
+- Durable `POST /v1/investigations/runs` start and review endpoints
+- Official MCP Python SDK v2 server with bounded, read-only SEC evidence tools
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -55,9 +60,6 @@ Implemented:
 
 Planned next:
 
-- LangGraph investigation workflow
-- MCP-compatible financial-data tools
-- Numerical verification and safety guardrails
 - Retrieval and answer-quality evaluation
 - Experiment tracking and controlled A/B testing
 - Analyst-facing application and AWS deployment
@@ -88,7 +90,7 @@ flowchart TD
     H --> I["API, analyst interface, and evaluation"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, and numerical validation are implemented and integration-tested. Agent orchestration, evaluation, and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, and MCP evidence tools are implemented and tested. Evaluation and analyst delivery remain planned.
 
 ## Technology direction
 
@@ -102,8 +104,8 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Keyword search | PostgreSQL full-text and trigram search |
 | Retrieval | Hybrid retrieval, metadata filtering, reranking |
 | Generation | OpenAI Responses API, strict Structured Outputs, provider abstraction |
-| Agent orchestration | LangGraph |
-| Tool integration | Model Context Protocol |
+| Agent orchestration | LangGraph 1.x with PostgreSQL checkpoints and interrupts |
+| Tool integration | Model Context Protocol Python SDK v2 |
 | Evaluation | Retrieval, faithfulness, citation, numerical and latency metrics |
 | Experimentation | Offline experiments and controlled A/B testing |
 | Observability | Structured logs, traces, metrics and evaluation telemetry |
@@ -325,6 +327,45 @@ curl -X POST http://127.0.0.1:8000/v1/investigations/answer \
 
 The generation provider receives only bounded filing passages and exact SEC fact observations. It returns strict claim objects rather than free-form final prose. FinSight verifies every source ID, recomputes supported arithmetic with `Decimal`, omits failed calculations from the rendered answer, and always returns an explicit qualified-human-review requirement. Provider-side response storage is disabled. See [Grounded answers](docs/grounded_answers.md) for the trust boundaries and validation contract.
 
+### Run a durable human-reviewed investigation
+
+Use the workflow endpoint when an answer may be released to an analyst. Starting a run generates and validates the answer, saves graph state in PostgreSQL, and returns `pending_review` rather than authorizing release:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/investigations/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "thread_id": "00000000-0000-4000-8000-000000000008",
+    "question": "What supply-chain risks changed?",
+    "cik": "0000320193",
+    "form_types": ["10-K"]
+  }'
+```
+
+After checking the answer against its cited filing passages and facts, an attributable reviewer can approve or reject the exact checkpointed run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/investigations/runs/00000000-0000-4000-8000-000000000008/review \
+  -H "Content-Type: application/json" \
+  -d '{
+    "decision": "approve",
+    "reviewer_id": "analyst@example.com",
+    "notes": "Citations verified against the source filing."
+  }'
+```
+
+Only an `approved` workflow returns `release_authorized: true`. Resume loads the existing checkpoint and does not rerun retrieval or generation. See [Durable investigation workflow](docs/agent_workflow.md).
+
+### Run the MCP evidence server
+
+FinSight also exposes retrieval and exact company facts through an official MCP v2 stdio server:
+
+```bash
+finsight-mcp
+```
+
+The server publishes `search_sec_filing_evidence` and `list_sec_company_facts`. Both tools are bounded, read-only, idempotent, citation-preserving, and intentionally exclude approval or mutation actions. See [MCP evidence tools](docs/mcp_tools.md).
+
 ### Run the API
 
 ```bash
@@ -378,7 +419,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 5. ✅ Add SEC company-facts ingestion and normalized financial metrics.
 6. ✅ Add embeddings, hybrid retrieval, metadata filtering, and reranking.
 7. ✅ Build citation-grounded answer generation and numerical validation.
-8. Add LangGraph orchestration, MCP tools, and human approval states.
+8. ✅ Add LangGraph orchestration, MCP tools, and human approval states.
 9. Create retrieval, faithfulness, citation, safety, and latency evaluations.
 10. Add experiment tracking and controlled A/B testing.
 11. Build the analyst-facing application.

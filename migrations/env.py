@@ -2,6 +2,7 @@
 
 import asyncio
 from logging.config import fileConfig
+from typing import Any
 
 from alembic import context
 from sqlalchemy import pool
@@ -9,7 +10,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from finsight.config.settings import get_settings
-from finsight.storage.models import Base
+from finsight.storage import models as storage_models  # noqa: F401
+from finsight.storage.base import Base
 
 config = context.config
 
@@ -20,6 +22,28 @@ database_url = get_settings().database_url.get_secret_value()
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
+
+LANGGRAPH_CHECKPOINT_TABLES = {
+    "checkpoint_blobs",
+    "checkpoint_migrations",
+    "checkpoint_writes",
+    "checkpoints",
+}
+
+
+def include_application_object(
+    object_: Any,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to: Any,
+) -> bool:
+    """Exclude checkpoint tables whose schema is managed by LangGraph itself."""
+
+    del object_, compare_to
+    return not (
+        reflected and type_ == "table" and name is not None and name in LANGGRAPH_CHECKPOINT_TABLES
+    )
 
 
 def run_migrations_offline() -> None:
@@ -32,6 +56,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        include_object=include_application_object,
     )
 
     with context.begin_transaction():
@@ -46,6 +71,7 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
+        include_object=include_application_object,
     )
 
     with context.begin_transaction():
