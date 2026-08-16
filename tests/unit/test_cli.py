@@ -13,6 +13,7 @@ from finsight.ingestion.company_facts_service import (
     CompanyFactsIngestionResult,
 )
 from finsight.ingestion.service import DEFAULT_FILING_FORMS, SecIngestionResult
+from finsight.retrieval.embedding_service import EmbeddingRunResult
 
 COMPANY_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -45,6 +46,18 @@ def make_company_facts_result() -> CompanyFactsIngestionResult:
         created_observations=75,
         skipped_existing_observations=5,
         selected_taxonomies=("dei", "us-gaap"),
+    )
+
+
+def make_embedding_result() -> EmbeddingRunResult:
+    """Create a deterministic embedding CLI result."""
+
+    return EmbeddingRunResult(
+        model="text-embedding-3-small",
+        dimensions=1536,
+        selected_chunks=2,
+        embedded_chunks=2,
+        cik="0000320193",
     )
 
 
@@ -194,6 +207,85 @@ async def test_run_company_facts_ingestion_releases_resources(
     engine.dispose.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_run_embedding_backfill_releases_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Embedding CLI execution should release provider and database resources."""
+
+    settings = Mock(embedding_batch_size=100)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    session_factory = Mock()
+    provider = Mock()
+    provider_context = MagicMock()
+    provider_context.__aenter__ = AsyncMock(return_value=provider)
+    provider_context.__aexit__ = AsyncMock(return_value=None)
+    provider_factory = Mock()
+    provider_factory.from_settings.return_value = provider_context
+    backfill = AsyncMock(return_value=make_embedding_result())
+
+    monkeypatch.setattr(cli_module, "get_settings", Mock(return_value=settings))
+    monkeypatch.setattr(
+        cli_module,
+        "create_database_engine",
+        Mock(return_value=engine),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_session_factory",
+        Mock(return_value=session_factory),
+    )
+    monkeypatch.setattr(cli_module, "OpenAIEmbeddingProvider", provider_factory)
+    monkeypatch.setattr(cli_module, "embed_pending_chunks", backfill)
+
+    result = await cli_module.run_embedding_backfill(
+        cik="320193",
+        limit=20,
+    )
+
+    assert result == make_embedding_result()
+    backfill.assert_awaited_once_with(
+        provider=provider,
+        session_factory=session_factory,
+        limit=20,
+        batch_size=20,
+        cik="320193",
+    )
+    provider_context.__aexit__.assert_awaited_once()
+    engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_embedding_backfill_disposes_engine_after_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Database resources should close even when provider configuration fails."""
+
+    settings = Mock(embedding_batch_size=100)
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    provider_factory = Mock()
+    provider_factory.from_settings.side_effect = ValueError("missing API key")
+    monkeypatch.setattr(cli_module, "get_settings", Mock(return_value=settings))
+    monkeypatch.setattr(
+        cli_module,
+        "create_database_engine",
+        Mock(return_value=engine),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_session_factory",
+        Mock(return_value=Mock()),
+    )
+    monkeypatch.setattr(cli_module, "OpenAIEmbeddingProvider", provider_factory)
+
+    with pytest.raises(ValueError, match="missing API key"):
+        await cli_module.run_embedding_backfill(cik=None, limit=1)
+
+    engine.dispose.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     ("arguments", "expected_forms"),
     [
@@ -284,3 +376,30 @@ def test_main_runs_company_facts_ingestion(
     payload = json.loads(capsys.readouterr().out)
     assert payload["created_observations"] == 75
     assert payload["selected_taxonomies"] == ["dei", "us-gaap"]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_cik"),
+    [
+        (["embed-chunks", "--limit", "2"], None),
+        (["embed-chunks", "--cik", "320193", "--limit", "2"], "320193"),
+    ],
+)
+def test_main_runs_embedding_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    expected_cik: str | None,
+) -> None:
+    """The CLI should support global and issuer-scoped embedding runs."""
+
+    backfill = AsyncMock(return_value=make_embedding_result())
+    monkeypatch.setattr(cli_module, "run_embedding_backfill", backfill)
+
+    exit_code = cli_module.main(arguments)
+
+    assert exit_code == 0
+    backfill.assert_awaited_once_with(cik=expected_cik, limit=2)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model"] == "text-embedding-3-small"
+    assert payload["embedded_chunks"] == 2

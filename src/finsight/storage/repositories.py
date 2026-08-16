@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -9,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +127,24 @@ class StoredFinancialFacts:
 
     created_count: int
     existing_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PendingChunkEmbedding:
+    """Immutable chunk input selected for external embedding generation."""
+
+    chunk_id: UUID
+    content: str
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkEmbeddingUpdate:
+    """One optimistic embedding update tied to immutable chunk content."""
+
+    chunk_id: UUID
+    content_hash: str
+    embedding: tuple[float, ...]
 
 
 async def upsert_company(
@@ -316,6 +335,95 @@ async def store_financial_facts(
         created_count=created_count,
         existing_count=len(facts) - created_count,
     )
+
+
+async def list_chunks_for_embedding(
+    session: AsyncSession,
+    *,
+    model: str,
+    limit: int,
+    cik: str | None = None,
+) -> list[PendingChunkEmbedding]:
+    """Select a stable batch whose vector is missing or from another model."""
+
+    if limit < 1:
+        raise ValueError("embedding selection limit must be positive")
+
+    statement = (
+        select(
+            FilingChunk.id,
+            FilingChunk.content,
+            FilingChunk.content_hash,
+        )
+        .join(FilingSection, FilingChunk.section_id == FilingSection.id)
+        .join(Filing, FilingSection.filing_id == Filing.id)
+        .where(
+            or_(
+                FilingChunk.embedding.is_(None),
+                FilingChunk.embedding_model.is_(None),
+                FilingChunk.embedding_model != model,
+            )
+        )
+        .order_by(FilingChunk.id)
+        .limit(limit)
+    )
+    if cik is not None:
+        statement = statement.join(Company, Filing.company_id == Company.id).where(
+            Company.cik == cik
+        )
+
+    result = await session.execute(statement)
+    return [
+        PendingChunkEmbedding(
+            chunk_id=row.id,
+            content=row.content,
+            content_hash=row.content_hash,
+        )
+        for row in result.all()
+    ]
+
+
+async def store_chunk_embeddings(
+    session: AsyncSession,
+    *,
+    model: str,
+    dimensions: int,
+    updates: Sequence[ChunkEmbeddingUpdate],
+) -> int:
+    """Persist validated vectors only when source hashes remain unchanged."""
+
+    if not model.strip():
+        raise ValueError("embedding model cannot be blank")
+    if dimensions < 1:
+        raise ValueError("embedding dimensions must be positive")
+    if len({item.chunk_id for item in updates}) != len(updates):
+        raise ValueError("embedding updates must contain unique chunk identifiers")
+
+    stored_count = 0
+    for item in updates:
+        if len(item.embedding) != dimensions:
+            raise ValueError("embedding vector does not match configured dimensions")
+        if not all(math.isfinite(value) for value in item.embedding):
+            raise ValueError("embedding vector contains non-finite values")
+
+        statement = (
+            update(FilingChunk)
+            .where(
+                FilingChunk.id == item.chunk_id,
+                FilingChunk.content_hash == item.content_hash,
+            )
+            .values(
+                embedding=list(item.embedding),
+                embedding_model=model,
+                updated_at=func.now(),
+            )
+            .returning(FilingChunk.id)
+        )
+        result = await session.execute(statement)
+        if result.scalar_one_or_none() is not None:
+            stored_count += 1
+
+    return stored_count
 
 
 def _verify_existing_filing(
