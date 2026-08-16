@@ -9,6 +9,7 @@ from uuid import UUID
 
 from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     Date,
@@ -30,6 +31,178 @@ from finsight.config.settings import DEFAULT_EMBEDDING_DIMENSIONS
 from finsight.storage.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 EMBEDDING_DIMENSIONS = DEFAULT_EMBEDDING_DIMENSIONS
+
+
+class Experiment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Immutable experiment plan with a separately controlled lifecycle state."""
+
+    __tablename__ = "experiments"
+    __table_args__ = (
+        CheckConstraint(
+            "plan_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_experiments_plan_fingerprint_format",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'running', 'stopped', 'completed')",
+            name="ck_experiments_status",
+        ),
+    )
+
+    experiment_key: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    variants: Mapped[list[ExperimentVariant]] = relationship(
+        back_populates="experiment",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    assignments: Mapped[list[ExperimentAssignment]] = relationship(
+        back_populates="experiment",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ExperimentVariant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One immutable control or treatment configuration."""
+
+    __tablename__ = "experiment_variants"
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_id",
+            "variant_key",
+            name="uq_experiment_variants_experiment_key",
+        ),
+        CheckConstraint(
+            "allocation_basis_points > 0 AND allocation_basis_points < 10000",
+            name="ck_experiment_variants_allocation_bounds",
+        ),
+    )
+
+    experiment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    variant_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    allocation_basis_points: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_control: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    experiment: Mapped[Experiment] = relationship(back_populates="variants")
+    assignments: Mapped[list[ExperimentAssignment]] = relationship(back_populates="variant")
+
+
+class ExperimentAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Sticky experiment assignment keyed only by an irreversible unit HMAC."""
+
+    __tablename__ = "experiment_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_id",
+            "unit_hash",
+            name="uq_experiment_assignments_experiment_unit",
+        ),
+        CheckConstraint(
+            "unit_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_experiment_assignments_unit_hash_format",
+        ),
+    )
+
+    experiment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    variant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_variants.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    unit_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    experiment: Mapped[Experiment] = relationship(back_populates="assignments")
+    variant: Mapped[ExperimentVariant] = relationship(back_populates="assignments")
+    events: Mapped[list[ExperimentEvent]] = relationship(
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ExperimentEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Append-only, idempotent exposure or outcome telemetry."""
+
+    __tablename__ = "experiment_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "assignment_id",
+            "event_key",
+            name="uq_experiment_events_assignment_event_key",
+        ),
+        CheckConstraint(
+            "event_type IN ('exposure', 'outcome')",
+            name="ck_experiment_events_type",
+        ),
+        CheckConstraint(
+            "(event_type = 'exposure' AND metric_name IS NULL AND metric_value IS NULL) "
+            "OR (event_type = 'outcome' AND metric_name IS NOT NULL "
+            "AND metric_value IS NOT NULL)",
+            name="ck_experiment_events_shape",
+        ),
+        Index(
+            "uq_experiment_events_assignment_exposure",
+            "assignment_id",
+            unique=True,
+            postgresql_where=text("event_type = 'exposure'"),
+        ),
+        Index(
+            "uq_experiment_events_assignment_metric",
+            "assignment_id",
+            "metric_name",
+            unique=True,
+            postgresql_where=text("event_type = 'outcome'"),
+        ),
+    )
+
+    assignment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("experiment_assignments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    metric_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    metric_value: Mapped[Decimal | None] = mapped_column(Numeric(), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    assignment: Mapped[ExperimentAssignment] = relationship(back_populates="events")
 
 
 class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):

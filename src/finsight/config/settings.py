@@ -6,10 +6,6 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LOCAL_DATABASE_PASSWORD = "finsight-local-only"
-DEFAULT_DATABASE_URL = (
-    f"postgresql+psycopg://finsight:{LOCAL_DATABASE_PASSWORD}@localhost:5432/finsight"
-)
 DEFAULT_EMBEDDING_DIMENSIONS = 1536
 
 
@@ -52,9 +48,16 @@ class Settings(BaseSettings):
     generation_max_output_tokens: int = Field(default=2_000, ge=256, le=20_000)
     generation_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
 
+    experiment_assignment_secret: SecretStr = Field(
+        default=SecretStr(""),
+        min_length=32,
+        validate_default=True,
+    )
+
     database_url: SecretStr = Field(
-        default=SecretStr(DEFAULT_DATABASE_URL),
+        default=SecretStr(""),
         min_length=1,
+        validate_default=True,
     )
     database_echo: bool = False
     database_pool_size: int = Field(default=5, ge=1, le=50)
@@ -78,14 +81,6 @@ class Settings(BaseSettings):
 
         if not database_url.startswith("postgresql+psycopg://"):
             raise ValueError("database_url must use the postgresql+psycopg driver")
-
-        if (
-            self.environment in {"staging", "production"}
-            and LOCAL_DATABASE_PASSWORD in database_url
-        ):
-            raise ValueError(
-                "staging and production environments cannot use the local database password"
-            )
 
         if self.embedding_dimensions != DEFAULT_EMBEDDING_DIMENSIONS:
             raise ValueError(

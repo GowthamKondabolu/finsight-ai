@@ -8,6 +8,7 @@ import json
 from collections.abc import Collection, Sequence
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -18,6 +19,19 @@ from finsight.evaluation.runner import (
     DEFAULT_BOOTSTRAP_ITERATIONS,
     DEFAULT_RANDOM_SEED,
     compare_systems,
+)
+from finsight.experiments.assignment import estimate_binary_sample_size_per_variant
+from finsight.experiments.contracts import (
+    ExperimentAnalysisReport,
+    ExperimentRegistrationResult,
+    ExperimentStatus,
+    ExperimentStatusResult,
+)
+from finsight.experiments.io import load_experiment_plan
+from finsight.experiments.repositories import (
+    analyze_registered_experiment,
+    register_experiment,
+    transition_experiment_status,
 )
 from finsight.ingestion.company_facts_service import (
     DEFAULT_COMPANY_FACT_TAXONOMIES,
@@ -40,10 +54,17 @@ from finsight.retrieval.embeddings import OpenAIEmbeddingProvider
 from finsight.storage.database import (
     create_database_engine,
     create_session_factory,
+    session_scope,
 )
 
 OperationResult = (
-    SecIngestionResult | CompanyFactsIngestionResult | EmbeddingRunResult | PairedExperimentReport
+    SecIngestionResult
+    | CompanyFactsIngestionResult
+    | EmbeddingRunResult
+    | PairedExperimentReport
+    | ExperimentRegistrationResult
+    | ExperimentStatusResult
+    | ExperimentAnalysisReport
 )
 
 
@@ -159,6 +180,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Deterministic random seed for paired confidence intervals.",
     )
 
+    register_experiment_parser = subparsers.add_parser(
+        "register-experiment",
+        help="Persist an immutable controlled-experiment plan.",
+    )
+    register_experiment_parser.add_argument(
+        "--spec",
+        type=Path,
+        required=True,
+        help="Path to a strict experiment-plan JSON file.",
+    )
+    register_experiment_parser.add_argument(
+        "--start",
+        action="store_true",
+        help="Move a newly registered draft directly into the running state.",
+    )
+
+    status_parser = subparsers.add_parser(
+        "set-experiment-status",
+        help="Advance an experiment through its one-way lifecycle.",
+    )
+    status_parser.add_argument("--experiment-key", required=True)
+    status_parser.add_argument(
+        "--status",
+        choices=("running", "stopped", "completed"),
+        required=True,
+    )
+
+    analysis_parser = subparsers.add_parser(
+        "analyze-experiment",
+        help="Report experiment progress without favorable-interim peeking.",
+    )
+    analysis_parser.add_argument("--experiment-key", required=True)
+
     return parser
 
 
@@ -258,6 +312,84 @@ def run_paired_evaluation(
     return report
 
 
+async def run_experiment_registration(
+    *,
+    spec_path: Path,
+    start: bool,
+) -> ExperimentRegistrationResult:
+    """Register an immutable plan and optionally begin assignment."""
+
+    plan = load_experiment_plan(spec_path)
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            experiment, created = await register_experiment(session, plan)
+            if start and experiment.status == "draft":
+                experiment = await transition_experiment_status(
+                    session,
+                    experiment_key=plan.experiment_key,
+                    target_status="running",
+                )
+            return ExperimentRegistrationResult(
+                experiment_key=plan.experiment_key,
+                plan_fingerprint=plan.fingerprint(),
+                status=cast(ExperimentStatus, experiment.status),
+                created=created,
+                planned_sample_size_per_variant=plan.planned_sample_size_per_variant,
+                estimated_sample_size_per_variant=estimate_binary_sample_size_per_variant(plan),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def run_experiment_status_transition(
+    *,
+    experiment_key: str,
+    target_status: ExperimentStatus,
+) -> ExperimentStatusResult:
+    """Advance a registered experiment and return its audit timestamps."""
+
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            experiment = await transition_experiment_status(
+                session,
+                experiment_key=experiment_key,
+                target_status=target_status,
+            )
+            return ExperimentStatusResult(
+                experiment_key=experiment.experiment_key,
+                status=cast(ExperimentStatus, experiment.status),
+                started_at=experiment.started_at,
+                ended_at=experiment.ended_at,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def run_registered_experiment_analysis(
+    *,
+    experiment_key: str,
+) -> ExperimentAnalysisReport:
+    """Analyze persisted exposure and outcome telemetry."""
+
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_scope(session_factory) as session:
+            return await analyze_registered_experiment(
+                session,
+                experiment_key=experiment_key,
+            )
+    finally:
+        await engine.dispose()
+
+
 def format_operation_result(
     result: OperationResult,
 ) -> str:
@@ -306,7 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 limit=int(arguments.limit),
             )
         )
-    else:
+    elif arguments.command == "evaluate":
         result = run_paired_evaluation(
             dataset_path=arguments.dataset,
             control_run_path=arguments.control_run,
@@ -315,6 +447,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             top_k=int(arguments.top_k),
             bootstrap_iterations=int(arguments.bootstrap_iterations),
             random_seed=int(arguments.seed),
+        )
+    elif arguments.command == "register-experiment":
+        result = asyncio.run(
+            run_experiment_registration(
+                spec_path=arguments.spec,
+                start=bool(arguments.start),
+            )
+        )
+    elif arguments.command == "set-experiment-status":
+        result = asyncio.run(
+            run_experiment_status_transition(
+                experiment_key=str(arguments.experiment_key),
+                target_status=cast(ExperimentStatus, arguments.status),
+            )
+        )
+    else:
+        result = asyncio.run(
+            run_registered_experiment_analysis(
+                experiment_key=str(arguments.experiment_key),
+            )
         )
 
     print(format_operation_result(result))

@@ -4,9 +4,10 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
-from finsight.config.settings import DEFAULT_DATABASE_URL, Settings
+from finsight.config.settings import Settings
 from finsight.storage.database import (
     SessionFactory,
     check_database_connection,
@@ -15,11 +16,14 @@ from finsight.storage.database import (
     session_scope,
 )
 
+TEST_DATABASE_URL = "postgresql+psycopg://finsight@localhost:5432/finsight"
+
 
 def test_create_database_engine_uses_safe_pool_configuration() -> None:
     """Engine construction should honor the validated runtime settings."""
 
     settings = Settings(
+        database_url=SecretStr(TEST_DATABASE_URL),
         database_pool_size=7,
         database_max_overflow=14,
         database_pool_timeout_seconds=45,
@@ -34,7 +38,7 @@ def test_create_database_engine_uses_safe_pool_configuration() -> None:
 
     assert result is engine
     mocked_create_engine.assert_called_once_with(
-        DEFAULT_DATABASE_URL,
+        TEST_DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
         pool_size=7,

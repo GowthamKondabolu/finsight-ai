@@ -10,7 +10,7 @@ The planned platform combines SEC document ingestion, hybrid retrieval, grounded
 
 ## Project status
 
-**Current milestone: Reproducible evaluation and paired benchmark contracts**
+**Current milestone: Controlled experimentation and A/B telemetry**
 
 Implemented:
 
@@ -57,6 +57,13 @@ Implemented:
 - Seeded paired bootstrap intervals, effect sizes, and exact paired sign tests
 - Synthetic-fixture safeguards that prevent example metrics from becoming performance claims
 - `finsight evaluate` offline control-versus-treatment workflow
+- Immutable PostgreSQL experiment plans linked to Git and offline-report identities
+- HMAC-SHA-256 user or session assignment with no raw identifier persistence
+- Sticky control/treatment allocation with database uniqueness enforcement
+- Separate idempotent exposure and preregistered outcome telemetry
+- Two-proportion power planning and enforced per-arm sample commitments
+- No-peeking analysis with confidence intervals, practical effects, and guardrails
+- Assignment, event, and analysis APIs plus experiment lifecycle CLI commands
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
 - `finsight ingest-sec` command-line workflow
@@ -65,7 +72,6 @@ Implemented:
 
 Planned next:
 
-- Experiment tracking and controlled A/B testing
 - Analyst-facing application and AWS deployment
 
 ## Problem
@@ -91,10 +97,13 @@ flowchart TD
     E --> F["Agentic investigation workflow"]
     F --> G["Citation and numerical validation"]
     G --> H["Human approval or grounded response"]
-    H --> I["API, analyst interface, and evaluation"]
+    H --> I["API delivery"]
+    I --> J["Controlled assignment and telemetry"]
+    J --> K["Offline and online evaluation"]
+    I --> L["Analyst interface"]
 ```
 
-Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, and reproducible offline evaluation are implemented and tested. Controlled experimentation and analyst delivery remain planned.
+Validated SEC ingestion, deterministic document processing, normalized company facts, embedding persistence, hybrid retrieval, citation-grounded generation, numerical validation, durable agent orchestration, MCP evidence tools, reproducible offline evaluation, and controlled experimentation are implemented and tested. Analyst delivery and cloud operations remain planned.
 
 ## Technology direction
 
@@ -111,7 +120,7 @@ Validated SEC ingestion, deterministic document processing, normalized company f
 | Agent orchestration | LangGraph 1.x with PostgreSQL checkpoints and interrupts |
 | Tool integration | Model Context Protocol Python SDK v2 |
 | Evaluation | Retrieval, faithfulness, citation, numerical and latency metrics |
-| Experimentation | Offline experiments and controlled A/B testing |
+| Experimentation | Preregistered offline comparisons, deterministic A/B assignment, PostgreSQL telemetry, and guardrail-aware analysis |
 | Observability | Structured logs, traces, metrics and evaluation telemetry |
 | Local infrastructure | Docker Compose |
 | Cloud target | AWS with infrastructure as code |
@@ -127,6 +136,7 @@ finsight-ai/
 │   └── web/
 ├── docs/
 ├── evals/
+├── experiments/
 ├── infrastructure/
 │   ├── postgres/
 │   └── terraform/
@@ -177,7 +187,33 @@ pip install -e ".[dev]"
 
 ```bash
 cp .env.example .env
+
+python - <<'PY'
+from pathlib import Path
+import secrets
+
+environment_file = Path(".env")
+contents = environment_file.read_text(encoding="utf-8")
+database_password = secrets.token_hex(24)
+assignment_secret = secrets.token_hex(32)
+contents = contents.replace(
+    "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET=\n",
+    f"FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET={assignment_secret}\n",
+)
+contents = contents.replace(
+    "FINSIGHT_DATABASE_URL=\n",
+    "FINSIGHT_DATABASE_URL="
+    f"postgresql+psycopg://finsight:{database_password}@localhost:5432/finsight\n",
+)
+contents = contents.replace(
+    "POSTGRES_PASSWORD=\n",
+    f"POSTGRES_PASSWORD={database_password}\n",
+)
+environment_file.write_text(contents, encoding="utf-8")
+PY
 ```
+
+The setup command generates a database password and independent experiment-assignment HMAC secret only in the ignored `.env` file. FinSight and Docker Compose fail closed when these values are absent; the repository contains no working default credentials.
 
 Update `FINSIGHT_SEC_USER_AGENT` in `.env` with a valid application name and contact email before accessing SEC services. Set `FINSIGHT_OPENAI_API_KEY` only when generating production embeddings or investigation answers.
 
@@ -387,6 +423,27 @@ finsight evaluate \
 
 The fixture verifies metric and reporting contracts only; it is not a FinSight performance benchmark. See [Evaluation and paired experiments](docs/evaluation.md) for artifact schemas, metric definitions, statistical design, and publication safeguards.
 
+### Register and monitor a controlled experiment
+
+After reviewing the committed plan and applying database migrations:
+
+```bash
+finsight register-experiment \
+  --spec experiments/fixtures/answer_workflow_v1.json \
+  --start
+```
+
+The assignment API returns a sticky control or treatment configuration while storing only an experiment-scoped HMAC of the supplied user or persistent-session identifier. Clients then record an exposure and preregistered outcomes through `/v1/experiments/{experiment_key}/events`.
+
+Analysis remains suppressed until both arms reach the declared primary-metric sample size:
+
+```bash
+finsight analyze-experiment \
+  --experiment-key answer-workflow-v1
+```
+
+See [Experiment tracking and controlled A/B testing](docs/experimentation.md) for privacy boundaries, lifecycle commands, telemetry contracts, guardrails, and causal limitations. The included plan is an engineering fixture, not an active production experiment or a performance claim.
+
 ### Run the API
 
 ```bash
@@ -428,6 +485,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 - Preserve filing, section, company, period, and source metadata throughout retrieval.
 - Require human approval for high-risk or insufficiently supported conclusions.
 - Evaluate retrieval and answer quality separately.
+- Preregister experiments and never unlock favorable interim inference by stopping early.
 - Never present synthetic benchmarks as real-world financial performance.
 - Keep secrets, credentials, and sensitive data outside the repository.
 
@@ -442,7 +500,7 @@ The test suite enforces a minimum coverage threshold of 85%.
 7. ✅ Build citation-grounded answer generation and numerical validation.
 8. ✅ Add LangGraph orchestration, MCP tools, and human approval states.
 9. ✅ Create retrieval, faithfulness, citation, safety, and latency evaluations.
-10. Add experiment tracking and controlled A/B testing.
+10. ✅ Add experiment tracking and controlled A/B testing.
 11. Build the analyst-facing application.
 12. Add observability, container deployment, Terraform, and AWS infrastructure.
 13. Publish a reproducible benchmark, architecture case study, and live demonstration.

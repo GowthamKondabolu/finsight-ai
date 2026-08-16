@@ -71,7 +71,9 @@ async def test_migrations_create_sec_filing_tables() -> None:
                     "WHERE schemaname = 'public' "
                     "AND tablename IN "
                     "('companies', 'financial_facts', 'filings', "
-                    "'filing_sections', 'filing_chunks')"
+                    "'filing_sections', 'filing_chunks', 'experiments', "
+                    "'experiment_variants', 'experiment_assignments', "
+                    "'experiment_events')"
                 )
             )
             tables = set(result.scalars().all())
@@ -80,6 +82,10 @@ async def test_migrations_create_sec_filing_tables() -> None:
 
     assert tables == {
         "companies",
+        "experiment_assignments",
+        "experiment_events",
+        "experiment_variants",
+        "experiments",
         "financial_facts",
         "filings",
         "filing_sections",

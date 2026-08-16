@@ -34,6 +34,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Generate ephemeral integration secrets
+        run: |
+          postgres_password="$(openssl rand -hex 24)"
+          assignment_secret="$(openssl rand -hex 32)"
+          {
+            echo "POSTGRES_PASSWORD=${postgres_password}"
+            echo "FINSIGHT_DATABASE_URL=postgresql+psycopg://finsight:${postgres_password}@localhost:5432/finsight"
+            echo "FINSIGHT_EXPERIMENT_ASSIGNMENT_SECRET=${assignment_secret}"
+          } >> "$GITHUB_ENV"
+
       - name: Check formatting
         run: ruff format --check .
 
@@ -66,6 +76,16 @@ jobs:
 
       - name: Verify database schema is current
         run: alembic check
+
+      - name: Validate controlled experiment contract
+        run: |
+          finsight register-experiment \
+            --spec experiments/fixtures/answer_workflow_v1.json \
+            --start > /tmp/finsight-experiment-registration.json
+          finsight analyze-experiment \
+            --experiment-key answer-workflow-v1 \
+            > /tmp/finsight-experiment-analysis.json
+          python -c "import json; report=json.load(open('/tmp/finsight-experiment-analysis.json')); assert report['analysis_ready'] is False; assert report['decision'] == 'collecting'"
 
       - name: Run unit and integration tests
         run: pytest

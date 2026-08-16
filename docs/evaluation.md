@@ -46,7 +46,7 @@ The intended offline comparison is:
 
 Both systems must process the same held-out cases. FinSight reports treatment-minus-control changes, paired bootstrap confidence intervals, paired standardized effect sizes, and exact paired sign-test p-values. Retrieval metrics remain separate from answer metrics so a generation improvement cannot hide a retrieval regression.
 
-This is a paired offline experiment, not proof of production causality. Step 10 will add experiment tracking and controlled A/B assignment. Online causal conclusions require randomized assignment, predeclared outcomes, sample-size planning, exposure integrity, and guardrail monitoring.
+This is a paired offline experiment, not proof of production causality. FinSight's [controlled experimentation layer](experimentation.md) now adds preregistration, deterministic sticky assignment, exposure and outcome telemetry, sample-size planning, and guardrail-aware analysis. Online causal conclusions still require correct eligibility, instrumentation, missing-data handling, and independent statistical review.
 
 ## Run the contract fixture
 
