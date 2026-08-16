@@ -368,6 +368,68 @@ class HumanReviewDecisionRequest(BaseModel):
         return candidate or None
 
 
+class InvestigationFeedbackRequest(BaseModel):
+    """Bounded, idempotent feedback captured after human review."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feedback_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$")
+    rating: Literal["helpful", "not_helpful"]
+    evidence_quality: int = Field(ge=1, le=5)
+    tags: list[
+        Literal[
+            "citation_gap",
+            "numerical_issue",
+            "missing_context",
+            "clear_and_complete",
+        ]
+    ] = Field(default_factory=list, max_length=4)
+    comment: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("tags")
+    @classmethod
+    def require_unique_feedback_tags(cls, values: list[str]) -> list[str]:
+        """Reject duplicate feedback labels."""
+
+        if len(set(values)) != len(values):
+            raise ValueError("feedback tags cannot contain duplicates")
+        return values
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_feedback_comment(cls, value: str | None) -> str | None:
+        """Normalize optional comments without accepting blank text."""
+
+        if value is None:
+            return None
+        candidate = value.strip()
+        return candidate or None
+
+    @model_validator(mode="after")
+    def validate_feedback_tag_semantics(self) -> Self:
+        """Keep positive feedback distinct from issue-oriented labels."""
+
+        if "clear_and_complete" in self.tags and len(self.tags) > 1:
+            raise ValueError("clear_and_complete cannot be combined with issue tags")
+        return self
+
+
+class InvestigationFeedbackResponse(BaseModel):
+    """Persisted analyst feedback without reviewer identity or sensitive data."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feedback_id: UUID
+    thread_id: UUID
+    feedback_key: str
+    rating: Literal["helpful", "not_helpful"]
+    evidence_quality: int
+    tags: list[str]
+    comment: str | None
+    recorded_at: datetime
+    duplicate: bool
+
+
 class HumanReviewRequestResponse(BaseModel):
     """Evidence summary returned while the graph awaits a reviewer."""
 

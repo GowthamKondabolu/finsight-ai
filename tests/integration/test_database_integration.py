@@ -73,7 +73,7 @@ async def test_migrations_create_sec_filing_tables() -> None:
                     "('companies', 'financial_facts', 'filings', "
                     "'filing_sections', 'filing_chunks', 'experiments', "
                     "'experiment_variants', 'experiment_assignments', "
-                    "'experiment_events')"
+                    "'experiment_events', 'investigation_feedback')"
                 )
             )
             tables = set(result.scalars().all())
@@ -86,6 +86,7 @@ async def test_migrations_create_sec_filing_tables() -> None:
         "experiment_events",
         "experiment_variants",
         "experiments",
+        "investigation_feedback",
         "financial_facts",
         "filings",
         "filing_sections",
