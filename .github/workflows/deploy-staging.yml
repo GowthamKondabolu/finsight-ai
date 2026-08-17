@@ -4,15 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Create a read-only plan or deploy the reviewed main commit"
+        description: "Plan, deploy, capture evidence, or destroy the reviewed staging stack"
         required: true
         default: plan
         type: choice
         options:
           - plan
           - deploy
+          - capture
+          - destroy
+      profile:
+        description: "Use standard custom-domain staging or the temporary portfolio-recording profile"
+        required: true
+        default: recording
+        type: choice
+        options:
+          - recording
+          - standard
       confirmation:
-        description: "For deploy, enter exactly: DEPLOY STAGING"
+        description: "Enter DEPLOY STAGING for deploy or DESTROY STAGING for destroy"
         required: false
         type: string
 
@@ -26,9 +36,9 @@ concurrency:
 
 jobs:
   terraform:
-    name: ${{ inputs.mode == 'deploy' && 'Deploy staging' || 'Plan staging' }}
+    name: FinSight staging ${{ inputs.mode }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: staging
 
     env:
@@ -48,6 +58,10 @@ jobs:
       TF_VAR_sec_user_agent: ${{ vars.FINSIGHT_SEC_USER_AGENT }}
       TF_VAR_api_image_tag: ${{ github.sha }}
       TF_VAR_web_image_tag: ${{ github.sha }}
+      TF_VAR_enable_recording_profile: ${{ inputs.profile == 'recording' && 'true' || 'false' }}
+      TF_VAR_ecr_force_delete: ${{ (inputs.profile == 'recording' || inputs.mode == 'destroy') && 'true' || 'false' }}
+      EVIDENCE_DIR: ${{ runner.temp }}/finsight-staging-evidence
+      DESTROY_EVIDENCE_DIR: ${{ runner.temp }}/finsight-destroy-evidence
 
     defaults:
       run:
@@ -58,11 +72,17 @@ jobs:
       - name: Check out reviewed main commit
         uses: actions/checkout@v7
 
-      - name: Require an explicit deployment confirmation
-        if: inputs.mode == 'deploy'
+      - name: Require an explicit change confirmation
+        if: inputs.mode == 'deploy' || inputs.mode == 'destroy'
         env:
-          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
-        run: test "$DEPLOY_CONFIRMATION" = "DEPLOY STAGING"
+          CHANGE_CONFIRMATION: ${{ inputs.confirmation }}
+          CHANGE_MODE: ${{ inputs.mode }}
+        run: |
+          if [[ "$CHANGE_MODE" == "deploy" ]]; then
+            test "$CHANGE_CONFIRMATION" = "DEPLOY STAGING"
+          else
+            test "$CHANGE_CONFIRMATION" = "DESTROY STAGING"
+          fi
 
       - name: Validate required GitHub Environment variables
         env:
@@ -74,6 +94,10 @@ jobs:
           test -n "$TF_STATE_BUCKET"
           test -n "$TF_STATE_KEY"
           test -n "$TF_VAR_sec_user_agent"
+          if [[ "${{ inputs.profile }}" == "standard" && "${{ inputs.mode }}" != "destroy" ]]; then
+            test -n "$TF_VAR_certificate_arn"
+            test -n "$TF_VAR_public_hostname"
+          fi
 
       - name: Configure short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.2.3
@@ -108,7 +132,7 @@ jobs:
 
       - name: Create read-only infrastructure plan
         if: inputs.mode == 'plan'
-        run: terraform plan -input=false -lock-timeout=5m -var="deploy_services=false"
+        run: terraform plan -input=false -lock-timeout=5m -var="deploy_services=true"
 
       - name: Bootstrap infrastructure without application services
         if: inputs.mode == 'deploy'
@@ -245,6 +269,19 @@ jobs:
           cluster="$(terraform output -raw ecs_cluster_name)"
           aws ecs wait services-stable --cluster "$cluster" --services api web
 
+      - name: Capture sanitized deployment evidence
+        if: inputs.mode == 'deploy' || inputs.mode == 'capture'
+        run: ../../../../scripts/aws/capture_staging_evidence.sh "$EVIDENCE_DIR"
+
+      - name: Upload deployment evidence
+        if: inputs.mode == 'deploy' || inputs.mode == 'capture'
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: finsight-staging-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish deployment summary
         if: inputs.mode == 'deploy'
         run: |
@@ -252,7 +289,80 @@ jobs:
             echo "## FinSight staging deployment"
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Load balancer: \`$(terraform output -raw load_balancer_dns_name)\`"
+            echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Application: $(terraform output -raw application_url)"
             echo "- Database migrations: completed before service rollout"
             echo "- Credentials: short-lived GitHub OIDC session"
+            echo "- Evidence: uploaded as \`finsight-staging-evidence-${{ github.run_id }}\`"
+            echo "- Required next action: capture the portfolio screenshots, then run \`destroy\` with \`DESTROY STAGING\` the same day"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record the pre-destroy inventory
+        if: inputs.mode == 'destroy'
+        env:
+          DESTROY_ACTOR: ${{ github.actor }}
+          DESTROY_PROFILE: ${{ inputs.profile }}
+          DESTROY_RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p "$DESTROY_EVIDENCE_DIR"
+          terraform state list > "$DESTROY_EVIDENCE_DIR/resources-before.txt"
+          jq -n \
+            --arg started_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg actor "$DESTROY_ACTOR" \
+            --arg profile "$DESTROY_PROFILE" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg run_id "$DESTROY_RUN_ID" \
+            '{
+              started_at_utc: $started_at_utc,
+              actor: $actor,
+              profile: $profile,
+              commit_sha: $commit_sha,
+              workflow_run_id: $run_id,
+              confirmation: "DESTROY STAGING"
+            }' > "$DESTROY_EVIDENCE_DIR/manifest.json"
+
+      - name: Destroy the staging runtime
+        if: inputs.mode == 'destroy'
+        run: |
+          terraform destroy \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var="deploy_services=false"
+
+      - name: Verify the Terraform state is empty
+        if: inputs.mode == 'destroy'
+        run: |
+          terraform state list > "$DESTROY_EVIDENCE_DIR/resources-after.txt"
+          test ! -s "$DESTROY_EVIDENCE_DIR/resources-after.txt"
+          jq \
+            --arg completed_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '. + {completed_at_utc: $completed_at_utc, terraform_state_empty: true}' \
+            "$DESTROY_EVIDENCE_DIR/manifest.json" \
+            > "$DESTROY_EVIDENCE_DIR/manifest.completed.json"
+          mv \
+            "$DESTROY_EVIDENCE_DIR/manifest.completed.json" \
+            "$DESTROY_EVIDENCE_DIR/manifest.json"
+
+      - name: Upload destroy audit evidence
+        if: always() && inputs.mode == 'destroy'
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: finsight-destroy-evidence-${{ github.run_id }}
+          path: ${{ env.DESTROY_EVIDENCE_DIR }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish destroy summary
+        if: inputs.mode == 'destroy'
+        run: |
+          {
+            echo "## FinSight staging destroy"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Terraform state: empty"
+            echo "- Runtime resources: destroyed"
+            echo "- Audit evidence: uploaded as \`finsight-destroy-evidence-${{ github.run_id }}\`"
+            echo "- Bootstrap S3 state bucket and GitHub OIDC role: intentionally retained"
           } >> "$GITHUB_STEP_SUMMARY"

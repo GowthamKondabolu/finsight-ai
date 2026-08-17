@@ -8,6 +8,7 @@ on:
       - ".github/workflows/deploy-staging.yml"
       - ".terraform-version"
       - "infrastructure/terraform/**"
+      - "scripts/aws/**"
   pull_request:
     branches: [main]
     paths:
@@ -15,6 +16,7 @@ on:
       - ".github/workflows/deploy-staging.yml"
       - ".terraform-version"
       - "infrastructure/terraform/**"
+      - "scripts/aws/**"
 
 permissions:
   contents: read
@@ -41,6 +43,9 @@ jobs:
 
       - name: Check Terraform formatting
         run: terraform fmt -check -recursive infrastructure/terraform
+
+      - name: Check AWS evidence script syntax
+        run: bash -n scripts/aws/capture_staging_evidence.sh
 
       - name: Validate bootstrap stack
         working-directory: infrastructure/terraform/bootstrap

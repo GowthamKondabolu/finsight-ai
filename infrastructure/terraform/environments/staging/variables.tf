@@ -60,6 +60,18 @@ variable "public_hostname" {
   }
 }
 
+variable "enable_recording_profile" {
+  description = "Use the ephemeral CloudFront recording path with its default HTTPS domain instead of requiring custom DNS and ACM."
+  type        = bool
+  default     = false
+}
+
+variable "ecr_force_delete" {
+  description = "Permit Terraform to delete non-empty ECR repositories. Enable only for an intentionally ephemeral environment."
+  type        = bool
+  default     = false
+}
+
 variable "deploy_services" {
   description = "Keep false during infrastructure bootstrap and database migration."
   type        = bool

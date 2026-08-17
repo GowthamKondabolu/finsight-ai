@@ -87,6 +87,8 @@ Implemented:
 - Immutable ECR repositories, one-shot migrations, circuit-breaker rollbacks, and CPU autoscaling
 - Secrets Manager delivery that keeps application values outside Terraform state
 - Manual plan-first GitHub Environment deployment with an explicit confirmation gate
+- Optional CloudFront recording profile with an AWS-provided HTTPS hostname and restricted ALB origin ingress
+- Confirmation-gated same-day destroy with ECR cleanup, inventory evidence, and empty-state verification
 - No-credential Terraform formatting, validation, and critical-misconfiguration scanning in CI
 - `finsight embed-chunks` command-line workflow
 - `finsight ingest-company-facts` command-line workflow
