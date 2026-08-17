@@ -32,11 +32,20 @@ locals {
 check "service_inputs" {
   assert {
     condition = !var.deploy_services || (
-      var.certificate_arn != "" &&
-      var.public_hostname != "" &&
       var.api_image_tag != "bootstrap" &&
-      var.web_image_tag != "bootstrap"
+      var.web_image_tag != "bootstrap" &&
+      (
+        var.enable_recording_profile ||
+        (var.certificate_arn != "" && var.public_hostname != "")
+      )
     )
-    error_message = "Service deployment requires certificate_arn, public_hostname, and immutable API/web image SHA tags."
+    error_message = "Service deployment requires immutable API/web image SHA tags and either the recording profile or certificate_arn plus public_hostname."
+  }
+}
+
+check "recording_profile_teardown" {
+  assert {
+    condition     = !var.enable_recording_profile || var.ecr_force_delete
+    error_message = "The recording profile requires ecr_force_delete=true for same-day teardown."
   }
 }

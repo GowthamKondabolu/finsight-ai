@@ -1,11 +1,35 @@
 output "application_url" {
-  description = "Public HTTPS URL after external DNS is pointed at the load balancer."
-  value       = var.public_hostname == "" ? null : "https://${var.public_hostname}"
+  description = "Public HTTPS URL provided by CloudFront for recording or by externally managed DNS for standard staging."
+  value = var.enable_recording_profile ? (
+    "https://${aws_cloudfront_distribution.recording[0].domain_name}"
+    ) : (
+    var.public_hostname == "" ? null : "https://${var.public_hostname}"
+  )
+}
+
+output "recording_profile_enabled" {
+  description = "Whether the ephemeral CloudFront recording path is active."
+  value       = var.enable_recording_profile
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution used by the recording profile."
+  value       = var.enable_recording_profile ? aws_cloudfront_distribution.recording[0].id : null
 }
 
 output "load_balancer_dns_name" {
   description = "Create an alias or CNAME from the chosen public hostname."
   value       = aws_lb.web.dns_name
+}
+
+output "load_balancer_arn_suffix" {
+  description = "Application Load Balancer dimension used for sanitized CloudWatch metric capture."
+  value       = aws_lb.web.arn_suffix
+}
+
+output "web_target_group_arn" {
+  description = "Web target group used for deployment-health evidence."
+  value       = aws_lb_target_group.web.arn
 }
 
 output "api_repository_url" {
@@ -46,6 +70,11 @@ output "database_address" {
 output "database_name" {
   description = "PostgreSQL database name."
   value       = aws_db_instance.main.db_name
+}
+
+output "database_identifier" {
+  description = "RDS identifier used for deployment-health evidence."
+  value       = aws_db_instance.main.identifier
 }
 
 output "database_master_secret_arn" {

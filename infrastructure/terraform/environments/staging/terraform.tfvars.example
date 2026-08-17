@@ -1,6 +1,8 @@
 aws_region      = "us-east-1"
 certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/replace-me"
 public_hostname = "staging-finsight.example.com"
+enable_recording_profile = false
+ecr_force_delete         = false
 
 # Staging cost defaults. Production should use 2 NAT gateways, Multi-AZ RDS,
 # deletion protection, at least 2 tasks per service, and a separate root module.

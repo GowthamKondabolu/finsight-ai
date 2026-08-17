@@ -1,0 +1,13 @@
+aws_region = "us-east-1"
+
+# The recording profile uses the AWS-provided CloudFront domain, so it does not
+# need a custom domain, Route 53 record, or ACM certificate.
+enable_recording_profile = true
+ecr_force_delete         = true
+certificate_arn          = ""
+public_hostname          = ""
+
+# Short-lived, single-run cost controls. Destroy the runtime the same day.
+nat_gateway_count            = 1
+database_multi_az            = false
+database_deletion_protection = false

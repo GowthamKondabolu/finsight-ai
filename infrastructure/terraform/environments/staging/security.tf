@@ -1,6 +1,6 @@
 resource "aws_security_group" "load_balancer" {
   name        = "${local.name_prefix}-alb"
-  description = "Public TLS ingress to the analyst web application"
+  description = "Public ingress to the analyst web application"
   vpc_id      = aws_vpc.main.id
 
   tags = { Name = "${local.name_prefix}-alb" }
@@ -31,6 +31,8 @@ resource "aws_security_group" "database" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  count = var.enable_recording_profile ? 0 : 1
+
   security_group_id = aws_security_group.load_balancer.id
   description       = "HTTP redirect"
   from_port         = 80
@@ -40,12 +42,31 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  count = var.enable_recording_profile ? 0 : 1
+
   security_group_id = aws_security_group.load_balancer.id
   description       = "HTTPS"
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
+  count = var.enable_recording_profile ? 1 : 0
+
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http_from_cloudfront" {
+  count = var.enable_recording_profile ? 1 : 0
+
+  security_group_id = aws_security_group.load_balancer.id
+  description       = "HTTP origin traffic from the AWS-managed CloudFront origin-facing network"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront_origin_facing[0].id
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
