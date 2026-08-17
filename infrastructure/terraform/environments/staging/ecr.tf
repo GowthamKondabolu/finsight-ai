@@ -1,7 +1,7 @@
 resource "aws_ecr_repository" "api" {
   name                 = "${local.name_prefix}-api"
   image_tag_mutability = "IMMUTABLE"
-  force_delete         = false
+  force_delete         = var.ephemeral_recording_mode
 
   image_scanning_configuration {
     scan_on_push = true
@@ -15,7 +15,7 @@ resource "aws_ecr_repository" "api" {
 resource "aws_ecr_repository" "web" {
   name                 = "${local.name_prefix}-web"
   image_tag_mutability = "IMMUTABLE"
-  force_delete         = false
+  force_delete         = var.ephemeral_recording_mode
 
   image_scanning_configuration {
     scan_on_push = true

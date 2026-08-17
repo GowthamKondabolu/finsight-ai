@@ -1,6 +1,13 @@
 output "application_url" {
-  description = "Public HTTPS URL after external DNS is pointed at the load balancer."
-  value       = var.public_hostname == "" ? null : "https://${var.public_hostname}"
+  description = "Public HTTPS URL from CloudFront recording mode or the externally managed hostname."
+  value = var.ephemeral_recording_mode ? (
+    "https://${aws_cloudfront_distribution.recording[0].domain_name}"
+  ) : (var.public_hostname == "" ? null : "https://${var.public_hostname}")
+}
+
+output "recording_distribution_id" {
+  description = "CloudFront distribution used only by ephemeral recording mode."
+  value       = var.ephemeral_recording_mode ? aws_cloudfront_distribution.recording[0].id : null
 }
 
 output "load_balancer_dns_name" {

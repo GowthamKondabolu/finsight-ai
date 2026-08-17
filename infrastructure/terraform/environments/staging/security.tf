@@ -32,14 +32,17 @@ resource "aws_security_group" "database" {
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   security_group_id = aws_security_group.load_balancer.id
-  description       = "HTTP redirect"
+  description       = var.ephemeral_recording_mode ? "CloudFront origin traffic" : "HTTP redirect"
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = var.ephemeral_recording_mode ? null : "0.0.0.0/0"
+  prefix_list_id    = var.ephemeral_recording_mode ? data.aws_ec2_managed_prefix_list.cloudfront_origin.id : null
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  count = var.ephemeral_recording_mode ? 0 : 1
+
   security_group_id = aws_security_group.load_balancer.id
   description       = "HTTPS"
   from_port         = 443

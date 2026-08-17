@@ -60,6 +60,12 @@ variable "public_hostname" {
   }
 }
 
+variable "ephemeral_recording_mode" {
+  description = "Use an AWS-provided HTTPS endpoint and teardown-safe settings for a same-day evidence capture."
+  type        = bool
+  default     = false
+}
+
 variable "deploy_services" {
   description = "Keep false during infrastructure bootstrap and database migration."
   type        = bool

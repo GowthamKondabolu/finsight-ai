@@ -36,12 +36,17 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = "redirect"
+    type             = var.ephemeral_recording_mode ? "forward" : "redirect"
+    target_group_arn = var.ephemeral_recording_mode ? aws_lb_target_group.web.arn : null
 
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
+    dynamic "redirect" {
+      for_each = var.ephemeral_recording_mode ? [] : [true]
+
+      content {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
     }
   }
 }
