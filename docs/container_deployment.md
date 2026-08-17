@@ -1,6 +1,6 @@
 # Container deployment
 
-FinSight ships separate production images for FastAPI and the Next.js analyst application. Docker Compose remains a local integration and deployment-smoke environment; Terraform and AWS orchestration are intentionally handled in the next milestone.
+FinSight ships separate production images for FastAPI and the Next.js analyst application. Docker Compose remains the local integration and deployment-smoke environment; the AWS staging reference uses the same images through Terraform-managed ECS Fargate task definitions.
 
 ## Image design
 
@@ -58,6 +58,6 @@ docker image inspect finsight-web:local --format '{{.Config.User}}'
 
 CI builds both final images and fails on fixed critical operating-system or application-library vulnerabilities reported by Trivy. Dependency auditing remains separate so Python package findings are visible even when no image is built locally.
 
-## Remaining cloud boundary
+## Cloud boundary
 
-The images are deployment-ready but this milestone does not claim a public production environment. The AWS milestone will add immutable registry tags, private networking, managed PostgreSQL, secrets delivery, TLS, identity-aware edge authorization, backups, autoscaling, alert routing, and rollback automation through Terraform.
+The AWS reference adds immutable ECR tags, private networking, managed PostgreSQL, Secrets Manager delivery, TLS, backups, autoscaling, alert routing, and circuit-breaker rollback through Terraform. It remains deployment code rather than a claim that a public environment is live. See [AWS deployment architecture](aws_deployment.md) and [Terraform operations](../infrastructure/terraform/README.md).

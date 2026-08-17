@@ -1,0 +1,258 @@
+name: Deploy FinSight staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Create a read-only plan or deploy the reviewed main commit"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - deploy
+      confirmation:
+        description: "For deploy, enter exactly: DEPLOY STAGING"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ inputs.mode == 'deploy' && 'Deploy staging' || 'Plan staging' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: staging
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_certificate_arn: ${{ vars.FINSIGHT_CERTIFICATE_ARN }}
+      TF_VAR_public_hostname: ${{ vars.FINSIGHT_PUBLIC_HOSTNAME }}
+      TF_VAR_alarm_email: ${{ vars.FINSIGHT_ALARM_EMAIL }}
+      TF_VAR_enable_openai_secret: ${{ vars.FINSIGHT_ENABLE_OPENAI_SECRET || 'false' }}
+      TF_VAR_enable_otel_headers_secret: ${{ vars.FINSIGHT_ENABLE_OTEL_HEADERS_SECRET || 'false' }}
+      TF_VAR_otel_traces_endpoint: ${{ vars.FINSIGHT_OTEL_TRACES_ENDPOINT }}
+      TF_VAR_otel_metrics_endpoint: ${{ vars.FINSIGHT_OTEL_METRICS_ENDPOINT }}
+      TF_VAR_sec_user_agent: ${{ vars.FINSIGHT_SEC_USER_AGENT }}
+      TF_VAR_api_image_tag: ${{ github.sha }}
+      TF_VAR_web_image_tag: ${{ github.sha }}
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: infrastructure/terraform/environments/staging
+
+    steps:
+      - name: Check out reviewed main commit
+        uses: actions/checkout@v7
+
+      - name: Require an explicit deployment confirmation
+        if: inputs.mode == 'deploy'
+        env:
+          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+        run: test "$DEPLOY_CONFIRMATION" = "DEPLOY STAGING"
+
+      - name: Validate required GitHub Environment variables
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          test -n "$AWS_REGION"
+          test -n "$AWS_DEPLOY_ROLE_ARN"
+          test -n "${{ vars.AWS_ACCOUNT_ID }}"
+          test -n "$TF_STATE_BUCKET"
+          test -n "$TF_STATE_KEY"
+          test -n "$TF_VAR_sec_user_agent"
+
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: finsight-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false
+
+      - name: Initialize remote state with S3 lockfiles
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Validate reviewed configuration
+        run: |
+          terraform fmt -check -recursive ../..
+          terraform validate
+
+      - name: Create read-only infrastructure plan
+        if: inputs.mode == 'plan'
+        run: terraform plan -input=false -lock-timeout=5m -var="deploy_services=false"
+
+      - name: Bootstrap infrastructure without application services
+        if: inputs.mode == 'deploy'
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var="deploy_services=false"
+
+      - name: Log in to Amazon ECR
+        if: inputs.mode == 'deploy'
+        uses: aws-actions/amazon-ecr-login@v2.1.6
+
+      - name: Build and push immutable application images
+        if: inputs.mode == 'deploy'
+        working-directory: .
+        run: |
+          api_repository="$(terraform -chdir=infrastructure/terraform/environments/staging output -raw api_repository_url)"
+          web_repository="$(terraform -chdir=infrastructure/terraform/environments/staging output -raw web_repository_url)"
+
+          docker build --pull --tag "${api_repository}:${GITHUB_SHA}" .
+          docker build --pull --tag "${web_repository}:${GITHUB_SHA}" apps/web
+          docker push "${api_repository}:${GITHUB_SHA}"
+          docker push "${web_repository}:${GITHUB_SHA}"
+
+      - name: Hydrate mandatory AWS Secrets Manager values
+        if: inputs.mode == 'deploy'
+        run: |
+          set +x
+
+          ensure_generated_secret() {
+            local secret_arn="$1"
+            local bytes="$2"
+            if aws secretsmanager get-secret-value --secret-id "$secret_arn" >/dev/null 2>&1; then
+              return
+            fi
+            local value
+            value="$(openssl rand -hex "$bytes")"
+            echo "::add-mask::${value}"
+            aws secretsmanager put-secret-value \
+              --secret-id "$secret_arn" \
+              --secret-string "$value" >/dev/null
+          }
+
+          api_token_secret="$(terraform output -raw api_auth_token_secret_arn)"
+          assignment_secret="$(terraform output -raw experiment_assignment_secret_arn)"
+          ensure_generated_secret "$api_token_secret" 32
+          ensure_generated_secret "$assignment_secret" 32
+
+          master_secret="$(terraform output -raw database_master_secret_arn)"
+          database_secret="$(terraform output -raw database_url_secret_arn)"
+          database_host="$(terraform output -raw database_address)"
+          database_name="$(terraform output -raw database_name)"
+          master_json="$(aws secretsmanager get-secret-value \
+            --secret-id "$master_secret" \
+            --query SecretString \
+            --output text)"
+
+          export DATABASE_HOST="$database_host"
+          export DATABASE_NAME="$database_name"
+          export MASTER_JSON="$master_json"
+          database_url="$(python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+
+          credentials = json.loads(os.environ["MASTER_JSON"])
+          username = quote(credentials["username"], safe="")
+          password = quote(credentials["password"], safe="")
+          host = os.environ["DATABASE_HOST"]
+          database = os.environ["DATABASE_NAME"]
+          print(f"postgresql+psycopg://{username}:{password}@{host}:5432/{database}")
+          PY
+          )"
+          echo "::add-mask::${database_url}"
+          aws secretsmanager put-secret-value \
+            --secret-id "$database_secret" \
+            --secret-string "$database_url" >/dev/null
+
+      - name: Verify optional secret values
+        if: inputs.mode == 'deploy'
+        run: |
+          if [[ "$TF_VAR_enable_openai_secret" == "true" ]]; then
+            aws secretsmanager get-secret-value \
+              --secret-id "$(terraform output -raw openai_api_key_secret_arn)" >/dev/null
+          fi
+          if [[ "$TF_VAR_enable_otel_headers_secret" == "true" ]]; then
+            aws secretsmanager get-secret-value \
+              --secret-id "$(terraform output -raw otel_export_headers_secret_arn)" >/dev/null
+          fi
+
+      - name: Run one-shot database migration
+        if: inputs.mode == 'deploy'
+        run: |
+          cluster="$(terraform output -raw ecs_cluster_name)"
+          task_definition="$(terraform output -raw api_task_definition_arn)"
+          subnets="$(terraform output -json application_subnet_ids)"
+          security_group="$(terraform output -raw api_security_group_id)"
+          network_configuration="$(jq -cn \
+            --argjson subnets "$subnets" \
+            --arg security_group "$security_group" \
+            '{awsvpcConfiguration:{subnets:$subnets,securityGroups:[$security_group],assignPublicIp:"DISABLED"}}')"
+
+          task_arn="$(aws ecs run-task \
+            --cluster "$cluster" \
+            --task-definition "$task_definition" \
+            --launch-type FARGATE \
+            --network-configuration "$network_configuration" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' \
+            --output text)"
+
+          test -n "$task_arn"
+          test "$task_arn" != "None"
+          aws ecs wait tasks-stopped --cluster "$cluster" --tasks "$task_arn"
+
+          exit_code="$(aws ecs describe-tasks \
+            --cluster "$cluster" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].containers[?name==`api`].exitCode | [0]' \
+            --output text)"
+          test "$exit_code" = "0"
+
+      - name: Deploy private services behind TLS
+        if: inputs.mode == 'deploy'
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var="deploy_services=true"
+
+          cluster="$(terraform output -raw ecs_cluster_name)"
+          aws ecs wait services-stable --cluster "$cluster" --services api web
+
+      - name: Publish deployment summary
+        if: inputs.mode == 'deploy'
+        run: |
+          {
+            echo "## FinSight staging deployment"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Load balancer: \`$(terraform output -raw load_balancer_dns_name)\`"
+            echo "- Database migrations: completed before service rollout"
+            echo "- Credentials: short-lived GitHub OIDC session"
+          } >> "$GITHUB_STEP_SUMMARY"

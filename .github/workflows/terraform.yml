@@ -1,0 +1,64 @@
+name: Terraform validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/terraform.yml"
+      - ".github/workflows/deploy-staging.yml"
+      - ".terraform-version"
+      - "infrastructure/terraform/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/terraform.yml"
+      - ".github/workflows/deploy-staging.yml"
+      - ".terraform-version"
+      - "infrastructure/terraform/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Format and validate Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infrastructure/terraform
+
+      - name: Validate bootstrap stack
+        working-directory: infrastructure/terraform/bootstrap
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Validate staging stack
+        working-directory: infrastructure/terraform/environments/staging
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Scan Terraform misconfigurations
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infrastructure/terraform
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
