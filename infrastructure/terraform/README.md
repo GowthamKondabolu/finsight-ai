@@ -40,8 +40,8 @@ Create a protected GitHub Environment named `staging`, then configure these Envi
 | `AWS_REGION` | Bootstrap region, for example `us-east-1` |
 | `TF_STATE_BUCKET` | Bootstrap output `state_bucket_name` |
 | `TF_STATE_KEY` | `finsight/staging/terraform.tfstate` |
-| `FINSIGHT_CERTIFICATE_ARN` | Validated ACM certificate in the same Region |
-| `FINSIGHT_PUBLIC_HOSTNAME` | Public hostname covered by the ACM certificate |
+| `FINSIGHT_CERTIFICATE_ARN` | Validated ACM certificate in the same Region; leave unset for the recording profile |
+| `FINSIGHT_PUBLIC_HOSTNAME` | Public hostname covered by the ACM certificate; leave unset for the recording profile |
 | `FINSIGHT_SEC_USER_AGENT` | Identifiable SEC application name and monitored contact email |
 | `FINSIGHT_ALARM_EMAIL` | Optional monitored alert address |
 | `FINSIGHT_ENABLE_OPENAI_SECRET` | `false` until the AWS secret has a value |
@@ -55,6 +55,8 @@ Require reviewers for the `staging` Environment. Limit deployment branches to `m
 
 Run `Deploy FinSight staging` in `plan` mode first. Review the plan and estimated AWS cost. When approved, run `deploy` and enter `DEPLOY STAGING`.
 
+Select the `recording` profile for a same-day evidence capture without a custom domain. It keeps the private ECS and RDS topology, adds an AWS-provided CloudFront HTTPS endpoint, disables service autoscaling, shortens backup and log retention, and makes generated images and secrets immediately removable. The `standard` profile retains the externally managed hostname and ACM certificate path.
+
 The workflow then performs this order:
 
 1. Authenticate to AWS using GitHub OIDC.
@@ -66,6 +68,8 @@ The workflow then performs this order:
 7. Enable the API and web ECS services and wait for a stable deployment.
 
 Terraform never receives an application secret value, so those values do not enter Terraform configuration or state. ECS obtains them through its execution role. When a secret changes, run a new deployment because running ECS tasks retain the value injected at startup.
+
+After evidence capture, rerun the workflow with the same profile, choose `destroy`, and enter `DESTROY STAGING`. The workflow destroys the staging state and then verifies that NAT gateways, Elastic IP addresses, ECS, ALB, RDS, ECR, and the temporary CloudFront distribution are absent. The bootstrap state bucket and GitHub OIDC role remain intentionally because they are managed by the separate bootstrap state.
 
 The staging workflow currently uses the RDS-managed master credential for migrations and application access. Before promoting the design to production, provision a separately rotated, least-privilege application role and retain the master credential only for migrations.
 
@@ -82,6 +86,8 @@ The defaults are intentionally modest but are not free:
 - no WAF, CloudFront, or paid interface VPC endpoints.
 
 NAT gateway, Fargate, RDS, ALB, CloudWatch, Secrets Manager, Cloud Map, public IPv4, data transfer, ECR, and model-provider usage can all incur charges. Use AWS Budgets outside this stack before applying it.
+
+For a temporary recording, rehearse locally before applying, keep one task per service, create billing notifications before deployment, capture evidence in one session, and destroy the same day. AWS Budgets can report late and are not a real-time hard cap, so the explicit teardown workflow is the primary control. Follow [the evidence-capture runbook](../../docs/aws_evidence_capture.md).
 
 Production should use at least two NAT gateways, Multi-AZ RDS, deletion protection, final snapshots, two tasks per service, Route 53 health-aware DNS, WAF, stronger backup retention, and a tested cross-account recovery plan.
 

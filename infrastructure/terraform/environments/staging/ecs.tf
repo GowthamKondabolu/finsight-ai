@@ -238,11 +238,11 @@ resource "aws_ecs_service" "web" {
     container_port   = 3000
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
 }
 
 resource "aws_appautoscaling_target" "api" {
-  count = var.deploy_services ? 1 : 0
+  count = var.deploy_services && !var.ephemeral_recording_mode ? 1 : 0
 
   max_capacity       = 4
   min_capacity       = var.api_desired_count
@@ -252,7 +252,7 @@ resource "aws_appautoscaling_target" "api" {
 }
 
 resource "aws_appautoscaling_policy" "api_cpu" {
-  count = var.deploy_services ? 1 : 0
+  count = var.deploy_services && !var.ephemeral_recording_mode ? 1 : 0
 
   name               = "${local.name_prefix}-api-cpu"
   policy_type        = "TargetTrackingScaling"
@@ -272,7 +272,7 @@ resource "aws_appautoscaling_policy" "api_cpu" {
 }
 
 resource "aws_appautoscaling_target" "web" {
-  count = var.deploy_services ? 1 : 0
+  count = var.deploy_services && !var.ephemeral_recording_mode ? 1 : 0
 
   max_capacity       = 4
   min_capacity       = var.web_desired_count
@@ -282,7 +282,7 @@ resource "aws_appautoscaling_target" "web" {
 }
 
 resource "aws_appautoscaling_policy" "web_cpu" {
-  count = var.deploy_services ? 1 : 0
+  count = var.deploy_services && !var.ephemeral_recording_mode ? 1 : 0
 
   name               = "${local.name_prefix}-web-cpu"
   policy_type        = "TargetTrackingScaling"

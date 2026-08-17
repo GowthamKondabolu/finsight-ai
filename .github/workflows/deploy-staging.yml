@@ -4,15 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Create a read-only plan or deploy the reviewed main commit"
+        description: "Plan, deploy, or destroy the reviewed main commit"
         required: true
         default: plan
         type: choice
         options:
           - plan
           - deploy
+          - destroy
+      profile:
+        description: "Use standard domain-based staging or a temporary AWS recording endpoint"
+        required: true
+        default: recording
+        type: choice
+        options:
+          - recording
+          - standard
       confirmation:
-        description: "For deploy, enter exactly: DEPLOY STAGING"
+        description: "Enter DEPLOY STAGING or DESTROY STAGING for the selected operation"
         required: false
         type: string
 
@@ -26,9 +35,9 @@ concurrency:
 
 jobs:
   terraform:
-    name: ${{ inputs.mode == 'deploy' && 'Deploy staging' || 'Plan staging' }}
+    name: ${{ inputs.mode == 'deploy' && 'Deploy staging' || inputs.mode == 'destroy' && 'Destroy staging' || 'Plan staging' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: staging
 
     env:
@@ -40,6 +49,9 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_certificate_arn: ${{ vars.FINSIGHT_CERTIFICATE_ARN }}
       TF_VAR_public_hostname: ${{ vars.FINSIGHT_PUBLIC_HOSTNAME }}
+      TF_VAR_ephemeral_recording_mode: ${{ inputs.profile == 'recording' && 'true' || 'false' }}
+      TF_VAR_database_backup_retention_days: ${{ inputs.profile == 'recording' && '1' || '7' }}
+      TF_VAR_log_retention_days: ${{ inputs.profile == 'recording' && '1' || '30' }}
       TF_VAR_alarm_email: ${{ vars.FINSIGHT_ALARM_EMAIL }}
       TF_VAR_enable_openai_secret: ${{ vars.FINSIGHT_ENABLE_OPENAI_SECRET || 'false' }}
       TF_VAR_enable_otel_headers_secret: ${{ vars.FINSIGHT_ENABLE_OTEL_HEADERS_SECRET || 'false' }}
@@ -58,11 +70,22 @@ jobs:
       - name: Check out reviewed main commit
         uses: actions/checkout@v7
 
-      - name: Require an explicit deployment confirmation
-        if: inputs.mode == 'deploy'
+      - name: Require an explicit mutation confirmation
+        if: inputs.mode == 'deploy' || inputs.mode == 'destroy'
         env:
-          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
-        run: test "$DEPLOY_CONFIRMATION" = "DEPLOY STAGING"
+          MUTATION_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [[ "${{ inputs.mode }}" == "deploy" ]]; then
+            test "$MUTATION_CONFIRMATION" = "DEPLOY STAGING"
+          else
+            test "$MUTATION_CONFIRMATION" = "DESTROY STAGING"
+          fi
+
+      - name: Configure the temporary recording profile
+        if: inputs.profile == 'recording'
+        run: |
+          echo "TF_VAR_certificate_arn=" >> "$GITHUB_ENV"
+          echo "TF_VAR_public_hostname=" >> "$GITHUB_ENV"
 
       - name: Validate required GitHub Environment variables
         env:
@@ -109,6 +132,106 @@ jobs:
       - name: Create read-only infrastructure plan
         if: inputs.mode == 'plan'
         run: terraform plan -input=false -lock-timeout=5m -var="deploy_services=false"
+
+      - name: Capture recording distribution before teardown
+        if: inputs.mode == 'destroy' && inputs.profile == 'recording'
+        run: |
+          terraform output -raw recording_distribution_id \
+            > "$RUNNER_TEMP/recording-distribution-id" 2>/dev/null || true
+
+      - name: Destroy staging infrastructure
+        if: inputs.mode == 'destroy'
+        run: |
+          terraform destroy \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var="deploy_services=true"
+
+      - name: Verify primary cost drivers were removed
+        if: inputs.mode == 'destroy'
+        run: |
+          set -euo pipefail
+          failed=0
+
+          assert_zero() {
+            local label="$1"
+            local count="$2"
+            if [[ "$count" != "0" ]]; then
+              echo "::error::${label} still reports ${count} resource(s)"
+              failed=1
+            else
+              echo "${label}: absent"
+            fi
+          }
+
+          nat_count="$(aws ec2 describe-nat-gateways \
+            --filter Name=tag:Application,Values=finsight \
+              Name=tag:Environment,Values=staging \
+              Name=state,Values=pending,available,deleting \
+            --query 'length(NatGateways)' --output text)"
+          eip_count="$(aws ec2 describe-addresses \
+            --filters Name=tag:Application,Values=finsight \
+              Name=tag:Environment,Values=staging \
+            --query 'length(Addresses)' --output text)"
+          cluster_count="$(aws ecs describe-clusters \
+            --clusters finsight-staging \
+            --query 'length(clusters[?status==`ACTIVE`])' --output text)"
+          assert_zero "NAT gateways" "$nat_count"
+          assert_zero "Elastic IP addresses" "$eip_count"
+          assert_zero "Active ECS clusters" "$cluster_count"
+
+          if aws elbv2 describe-load-balancers \
+            --names finsight-staging-web >/dev/null 2>&1; then
+            echo "::error::Application Load Balancer still exists"
+            failed=1
+          else
+            echo "Application Load Balancer: absent"
+          fi
+
+          if aws rds describe-db-instances \
+            --db-instance-identifier finsight-staging >/dev/null 2>&1; then
+            echo "::error::RDS instance still exists"
+            failed=1
+          else
+            echo "RDS instance: absent"
+          fi
+
+          for repository in finsight-staging-api finsight-staging-web; do
+            if aws ecr describe-repositories \
+              --repository-names "$repository" >/dev/null 2>&1; then
+              echo "::error::ECR repository ${repository} still exists"
+              failed=1
+            else
+              echo "ECR repository ${repository}: absent"
+            fi
+          done
+
+          distribution_file="$RUNNER_TEMP/recording-distribution-id"
+          if [[ -s "$distribution_file" ]]; then
+            distribution_id="$(cat "$distribution_file")"
+            if aws cloudfront get-distribution \
+              --id "$distribution_id" >/dev/null 2>&1; then
+              echo "::error::CloudFront recording distribution still exists"
+              failed=1
+            else
+              echo "CloudFront recording distribution: absent"
+            fi
+          fi
+
+          test "$failed" = "0"
+
+      - name: Publish teardown summary
+        if: inputs.mode == 'destroy' && success()
+        run: |
+          {
+            echo "## FinSight staging teardown"
+            echo
+            echo "- Terraform-managed staging resources: destroyed"
+            echo "- Primary hourly cost drivers: verified absent"
+            echo "- Bootstrap state bucket and GitHub OIDC role: intentionally retained"
+            echo "- Check AWS Billing and Cost Management after cost data is available"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Bootstrap infrastructure without application services
         if: inputs.mode == 'deploy'
@@ -252,7 +375,8 @@ jobs:
             echo "## FinSight staging deployment"
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Load balancer: \`$(terraform output -raw load_balancer_dns_name)\`"
+            echo "- Application: \`$(terraform output -raw application_url)\`"
+            echo "- Profile: \`${{ inputs.profile }}\`"
             echo "- Database migrations: completed before service rollout"
             echo "- Credentials: short-lived GitHub OIDC session"
           } >> "$GITHUB_STEP_SUMMARY"

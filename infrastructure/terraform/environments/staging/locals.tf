@@ -32,11 +32,25 @@ locals {
 check "service_inputs" {
   assert {
     condition = !var.deploy_services || (
-      var.certificate_arn != "" &&
-      var.public_hostname != "" &&
+      (var.ephemeral_recording_mode || (
+        var.certificate_arn != "" &&
+        var.public_hostname != ""
+      )) &&
       var.api_image_tag != "bootstrap" &&
       var.web_image_tag != "bootstrap"
     )
-    error_message = "Service deployment requires certificate_arn, public_hostname, and immutable API/web image SHA tags."
+    error_message = "Service deployment requires either recording mode or certificate/hostname inputs plus immutable API/web image SHA tags."
+  }
+}
+
+check "recording_inputs" {
+  assert {
+    condition = !var.ephemeral_recording_mode || (
+      var.certificate_arn == "" &&
+      var.public_hostname == "" &&
+      !var.database_multi_az &&
+      !var.database_deletion_protection
+    )
+    error_message = "Recording mode requires empty certificate/hostname inputs, single-AZ RDS, and deletion protection disabled."
   }
 }
