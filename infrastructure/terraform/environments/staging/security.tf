@@ -36,8 +36,8 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
-  cidr_ipv4         = var.ephemeral_recording_mode ? null : "0.0.0.0/0"
-  prefix_list_id    = var.ephemeral_recording_mode ? data.aws_ec2_managed_prefix_list.cloudfront_origin.id : null
+  cidr_ipv4      = var.ephemeral_recording_mode ? null : "0.0.0.0/0"
+  prefix_list_id = var.ephemeral_recording_mode ? data.aws_ec2_managed_prefix_list.cloudfront_origin.id : null
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {

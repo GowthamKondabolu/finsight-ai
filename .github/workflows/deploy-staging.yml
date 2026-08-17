@@ -136,12 +136,17 @@ jobs:
       - name: Capture recording distribution before teardown
         if: inputs.mode == 'destroy' && inputs.profile == 'recording'
         run: |
-          terraform output -raw recording_distribution_id             > "$RUNNER_TEMP/recording-distribution-id" 2>/dev/null || true
+          terraform output -raw recording_distribution_id \
+            > "$RUNNER_TEMP/recording-distribution-id" 2>/dev/null || true
 
       - name: Destroy staging infrastructure
         if: inputs.mode == 'destroy'
         run: |
-          terraform destroy             -auto-approve             -input=false             -lock-timeout=5m             -var="deploy_services=true"
+          terraform destroy \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var="deploy_services=true"
 
       - name: Verify primary cost drivers were removed
         if: inputs.mode == 'destroy'
@@ -160,21 +165,32 @@ jobs:
             fi
           }
 
-          nat_count="$(aws ec2 describe-nat-gateways             --filter Name=tag:Application,Values=finsight               Name=tag:Environment,Values=staging               Name=state,Values=pending,available,deleting             --query 'length(NatGateways)' --output text)"
-          eip_count="$(aws ec2 describe-addresses             --filters Name=tag:Application,Values=finsight               Name=tag:Environment,Values=staging             --query 'length(Addresses)' --output text)"
-          cluster_count="$(aws ecs describe-clusters             --clusters finsight-staging             --query 'length(clusters[?status==`ACTIVE`])' --output text)"
+          nat_count="$(aws ec2 describe-nat-gateways \
+            --filter Name=tag:Application,Values=finsight \
+              Name=tag:Environment,Values=staging \
+              Name=state,Values=pending,available,deleting \
+            --query 'length(NatGateways)' --output text)"
+          eip_count="$(aws ec2 describe-addresses \
+            --filters Name=tag:Application,Values=finsight \
+              Name=tag:Environment,Values=staging \
+            --query 'length(Addresses)' --output text)"
+          cluster_count="$(aws ecs describe-clusters \
+            --clusters finsight-staging \
+            --query 'length(clusters[?status==`ACTIVE`])' --output text)"
           assert_zero "NAT gateways" "$nat_count"
           assert_zero "Elastic IP addresses" "$eip_count"
           assert_zero "Active ECS clusters" "$cluster_count"
 
-          if aws elbv2 describe-load-balancers             --names finsight-staging-web >/dev/null 2>&1; then
+          if aws elbv2 describe-load-balancers \
+            --names finsight-staging-web >/dev/null 2>&1; then
             echo "::error::Application Load Balancer still exists"
             failed=1
           else
             echo "Application Load Balancer: absent"
           fi
 
-          if aws rds describe-db-instances             --db-instance-identifier finsight-staging >/dev/null 2>&1; then
+          if aws rds describe-db-instances \
+            --db-instance-identifier finsight-staging >/dev/null 2>&1; then
             echo "::error::RDS instance still exists"
             failed=1
           else
@@ -182,7 +198,8 @@ jobs:
           fi
 
           for repository in finsight-staging-api finsight-staging-web; do
-            if aws ecr describe-repositories               --repository-names "$repository" >/dev/null 2>&1; then
+            if aws ecr describe-repositories \
+              --repository-names "$repository" >/dev/null 2>&1; then
               echo "::error::ECR repository ${repository} still exists"
               failed=1
             else
@@ -193,7 +210,8 @@ jobs:
           distribution_file="$RUNNER_TEMP/recording-distribution-id"
           if [[ -s "$distribution_file" ]]; then
             distribution_id="$(cat "$distribution_file")"
-            if aws cloudfront get-distribution               --id "$distribution_id" >/dev/null 2>&1; then
+            if aws cloudfront get-distribution \
+              --id "$distribution_id" >/dev/null 2>&1; then
               echo "::error::CloudFront recording distribution still exists"
               failed=1
             else
