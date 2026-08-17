@@ -17,6 +17,7 @@ flowchart TD
 - Web and API tasks have no public IP addresses. The server-side Next.js proxy reaches FastAPI through private Cloud Map DNS and supplies the bearer token from Secrets Manager.
 - FastAPI accepts port 8000 only from the web security group. PostgreSQL accepts port 5432 only from the API security group.
 - Database subnets have no internet route. Application subnets use NAT for SEC EDGAR, model-provider, ECR, CloudWatch, Secrets Manager, and optional OTLP access.
+- Two time-bounded Trivy exceptions permit only outbound TCP 443 from the web and API tasks. Public SEC, model-provider, and OTLP endpoints do not provide stable destination CIDRs, while the cost-controlled staging stack intentionally omits paid interface endpoints. The exceptions expire on 2027-02-16 and must be reassessed before production promotion.
 - ECS runtime roles have no AWS API permissions. The separate execution role can pull images, write logs, and read only named application secrets.
 - RDS storage is encrypted, not public, backed up for seven days, and uses an RDS-managed rotating master secret.
 

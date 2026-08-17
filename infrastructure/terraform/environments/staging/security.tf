@@ -75,6 +75,9 @@ resource "aws_vpc_security_group_egress_rule" "web_to_api" {
   referenced_security_group_id = aws_security_group.api.id
 }
 
+# Staging omits paid interface endpoints, so the web task reaches AWS public APIs
+# through NAT on TLS only. Reassess this exception before production promotion.
+#trivy:ignore:AVD-AWS-0104:exp:2027-02-16
 resource "aws_vpc_security_group_egress_rule" "web_https" {
   security_group_id = aws_security_group.web.id
   description       = "ECR, Secrets Manager, and CloudWatch Logs"
@@ -111,6 +114,9 @@ resource "aws_vpc_security_group_ingress_rule" "api_from_web" {
   referenced_security_group_id = aws_security_group.web.id
 }
 
+# SEC EDGAR, model providers, and optional OTLP collectors use public HTTPS
+# endpoints without stable destination CIDRs. NAT and this TLS-only rule are required.
+#trivy:ignore:AVD-AWS-0104:exp:2027-02-16
 resource "aws_vpc_security_group_egress_rule" "api_https" {
   security_group_id = aws_security_group.api.id
   description       = "HTTPS for SEC, model provider, AWS APIs, and OTLP"
